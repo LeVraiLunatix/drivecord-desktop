@@ -1,3 +1,7 @@
+// The `api` client surface (uploads, download, public links, wire models) is
+// intentionally complete ahead of its callers — commands wire the rest in
+// B5–B8. Drop this once they're all reachable.
+#[allow(dead_code)]
 mod api;
 mod commands;
 mod config;
