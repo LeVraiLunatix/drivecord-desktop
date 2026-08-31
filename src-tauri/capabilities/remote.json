@@ -18,6 +18,7 @@
     "allow-win-minimize",
     "allow-win-toggle-maximize",
     "allow-win-close",
-    "allow-win-start-drag"
+    "allow-win-start-drag",
+    "core:window:allow-start-dragging"
   ]
 }
