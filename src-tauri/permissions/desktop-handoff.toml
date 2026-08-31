@@ -23,3 +23,23 @@ commands.allow = ["enter_shell"]
 identifier = "allow-enter-auth"
 description = "Autorise la commande enter_auth."
 commands.allow = ["enter_auth"]
+
+[[permission]]
+identifier = "allow-win-minimize"
+description = "Autorise la commande win_minimize."
+commands.allow = ["win_minimize"]
+
+[[permission]]
+identifier = "allow-win-toggle-maximize"
+description = "Autorise la commande win_toggle_maximize."
+commands.allow = ["win_toggle_maximize"]
+
+[[permission]]
+identifier = "allow-win-close"
+description = "Autorise la commande win_close."
+commands.allow = ["win_close"]
+
+[[permission]]
+identifier = "allow-win-start-drag"
+description = "Autorise la commande win_start_drag."
+commands.allow = ["win_start_drag"]

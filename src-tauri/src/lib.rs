@@ -45,6 +45,40 @@ fn logout<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 
+// ── Custom window controls (the OS title bar is hidden — `decorations: false`) ──
+
+#[tauri::command]
+fn win_minimize<R: Runtime>(app: tauri::AppHandle<R>) {
+    if let Some(w) = main_window(&app) {
+        let _ = w.minimize();
+    }
+}
+
+#[tauri::command]
+fn win_toggle_maximize<R: Runtime>(app: tauri::AppHandle<R>) {
+    if let Some(w) = main_window(&app) {
+        if w.is_maximized().unwrap_or(false) {
+            let _ = w.unmaximize();
+        } else {
+            let _ = w.maximize();
+        }
+    }
+}
+
+#[tauri::command]
+fn win_close<R: Runtime>(app: tauri::AppHandle<R>) {
+    if let Some(w) = main_window(&app) {
+        let _ = w.close();
+    }
+}
+
+#[tauri::command]
+fn win_start_drag<R: Runtime>(app: tauri::AppHandle<R>) {
+    if let Some(w) = main_window(&app) {
+        let _ = w.start_dragging();
+    }
+}
+
 fn focus_main<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(w) = main_window(app) {
         let _ = w.show();
@@ -93,6 +127,10 @@ pub fn run() {
             enter_shell,
             enter_auth,
             logout,
+            win_minimize,
+            win_toggle_maximize,
+            win_close,
+            win_start_drag,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

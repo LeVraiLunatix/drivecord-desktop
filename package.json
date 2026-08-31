@@ -8,8 +8,8 @@
   "scripts": {
     "shell": "node scripts/build-shell.mjs",
     "tauri": "tauri",
-    "app:dev": "tauri dev",
-    "app:build": "tauri build"
+    "app:dev": "npm run shell && tauri dev",
+    "app:build": "npm run shell && tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
