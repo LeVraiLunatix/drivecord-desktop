@@ -3,9 +3,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Runtime,
 };
-use tauri_plugin_opener::OpenerExt;
-
-use crate::config;
 
 pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Ouvrir Drivecord", true, None::<&str>)?;
@@ -38,12 +35,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
             "quit" => app.exit(0),
-            "folder" => {
-                if let Ok(Some(cfg)) = config::load_config(app) {
-                    let _ = app.opener().open_path(cfg.sync_dir, None::<&str>);
-                }
-            }
-            // "pause" is wired once the sync engine exists (B5+).
+            // "pause" and "folder" get wired to the sync engine in B8.
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

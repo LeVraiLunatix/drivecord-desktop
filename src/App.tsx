@@ -1,38 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
-import { getConfig, hasApiKey } from "./lib/api";
-import type { AppConfig } from "./lib/types";
-import { OnboardingWizard } from "./components/OnboardingWizard";
-import { MainWindow } from "./components/MainWindow";
-
-type Boot =
-  | { state: "loading" }
-  | { state: "onboarding" }
-  | { state: "ready"; config: AppConfig };
-
+/**
+ * Placeholder shell. Phase 1 (D1-b) replaces this with the embedded, client-only
+ * Drivecord frontend pointed at the remote API; Phase 2 adds the hidden sync
+ * webview. For now it just proves the shell + tray + autostart boot.
+ */
 export default function App() {
-  const [boot, setBoot] = useState<Boot>({ state: "loading" });
-
-  const refresh = useCallback(async () => {
-    const [config, keyed] = await Promise.all([getConfig(), hasApiKey()]);
-    if (config && keyed) setBoot({ state: "ready", config });
-    else setBoot({ state: "onboarding" });
-  }, []);
-
-  useEffect(() => {
-    refresh().catch(() => setBoot({ state: "onboarding" }));
-  }, [refresh]);
-
-  if (boot.state === "loading") {
-    return (
-      <div className="grid h-full place-items-center text-sm text-text-dim">
-        Chargement…
+  return (
+    <div className="grid h-full place-items-center px-8 text-center">
+      <div>
+        <h1 className="text-lg font-semibold">Drivecord Desktop</h1>
+        <p className="mt-2 text-sm text-text-dim">
+          Coquille en cours de construction — Phase&nbsp;0.
+        </p>
       </div>
-    );
-  }
-
-  if (boot.state === "onboarding") {
-    return <OnboardingWizard onDone={refresh} />;
-  }
-
-  return <MainWindow config={boot.config} onReconfigure={refresh} />;
+    </div>
+  );
 }

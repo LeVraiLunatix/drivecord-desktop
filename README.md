@@ -1,83 +1,56 @@
 # Drivecord Desktop
 
 Client de synchronisation Windows pour [Drivecord](https://drivecord.app) —
-façon kDrive / Dropbox : tourne dans la zone de notification, synchronise un
-dossier local avec un drive Drivecord via son **API publique** (`/api/v1`,
-authentifiée par clé `dvc_…`).
+façon kDrive : une fenêtre qui **est** l'app web Drivecord (même login, même
+interface), plus une **synchro de dossier local** en arrière-plan.
 
-> ⚠️ Les fichiers synchronisés par cette app **ne sont pas chiffrés de bout en
-> bout**, contrairement à l'upload depuis le site : une clé API n'a pas accès à
-> la clé de chiffrement personnelle du compte. Ne l'utilise pas pour des
-> fichiers sensibles.
+> ⚠️ La synchro chiffre les fichiers **côté client**, comme les uploads du site
+> (AES-256-GCM, clé de drive) : elle tourne dans le contexte JS du web, pas dans
+> une API. Le natif ne fait que l'accès disque.
 
-## Stack
+## Architecture cible
 
-- **Tauri 2** (backend Rust) + **React 19 / TypeScript / Vite** + **Tailwind v4**
-- Rust : `reqwest` (HTTP vers l'API Drivecord, backoff sur `429`),
-  `keyring` (clé API dans le Credential Manager Windows),
-  `tauri-plugin-store` (config non secrète), tray, autostart, single-instance
-- Le webview ne détient jamais la clé API ni ne fait de réseau : tout passe par
-  des commandes Rust.
+- **Coquille Tauri 2** : la fenêtre principale charge le front Drivecord
+  (embarqué, client-only, API distante — voir `D1-b`). Tray + autostart +
+  instance unique.
+- **Webview de sync cachée** (Phase 2) : même origine → partage la session
+  NextAuth + l'IndexedDB, reste vivante fenêtre fermée. Charge `/desktop-sync`.
+- **Pont natif Rust** (Phase 3) : `pick_folder`, `watch` (+ événements),
+  `read_file`, `write_file_atomic`, `list_dir`, `stat`, `mkdir`, `remove`,
+  `move`. Exposé à la seule webview de sync.
+- **Côté `discloud`** (repo web) : `isDesktopApp()`, page `/desktop-sync`,
+  section réglages « Dossier synchronisé », moteur `src/lib/sync/` réutilisant
+  `src/lib/crypto` + `src/lib/discord` + `src/lib/storage` + les routes
+  `/api/drive/[id]/*` existantes. Aucune nouvelle route.
 
 ## Prérequis de dev
 
-| Outil | Note |
-|-------|------|
-| Node ≥ 20 | frontend |
-| **Rust (stable)** via [rustup](https://rustup.rs) | **non installé sur cette machine — à faire avant `npm run app:dev`** |
-| MSVC Build Tools (C++) | `rustup` le réclame au 1er build sur Windows |
-| WebView2 Runtime | préinstallé sur Windows 11 |
+- Node ≥ 20
+- Rust stable (`rustup`) + charge « Développement Desktop en C++ » de VS 2022
+  (MSVC + Windows SDK). WebView2 : préinstallé Windows 11.
 
 ## Commandes
 
 ```bash
 npm install
-npm run app:dev      # Tauri + Vite en dev (HMR)
-npm run app:build    # build release (installeur NSIS)
-npm run typecheck    # tsc --noEmit
-```
-
-Côté Rust :
-
-```bash
+npm run app:dev      # Tauri + Vite (HMR)
+npm run app:build    # build release → installeur NSIS
+npm run typecheck
 cargo test  --manifest-path src-tauri/Cargo.toml
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
 ```
 
-## Architecture
+## Feuille de route (Plan B v2)
 
-```
-src/                      frontend React
-  lib/types.ts            miroir des types de l'API Drivecord
-  lib/api.ts              wrappers typés autour de invoke()
-  components/             OnboardingWizard, MainWindow (stubs B8)
-src-tauri/src/
-  api/                    client HTTP (reqwest) + modèles + retry 429
-  config.rs               keyring (clé API) + store (config.json)
-  commands.rs             commandes exposées au frontend
-  tray.rs                 icône + menu de la zone de notification
-  lib.rs                  wiring des plugins
-```
-
-## Feuille de route
-
-- **B0–B2** ✅ scaffold, config sécurisée, client API + tests
-- **B3** cache SQLite (mapping local ⇄ distant)
-- **B4** onboarding (fait, à polir) — vérif clé, choix dossier, bandeau E2EE
-- **B5** sync montante : watcher `notify`, upload simple/chunks
-- **B6** sync descendante : poll `updatedSince` + `cursor`, écriture atomique
-- **B7** résolution de conflits (`nom (conflit).ext`)
-- **B8** fenêtre principale : explorateur, file de transferts, réglages
-- **B9** tray complet (pause, statut live)
-- **B10** autostart + reprise de file au lancement
-- **V2** menu contextuel shell (lien public), throttle bande passante, multi-drive
-
-## API Drivecord consommée
-
-`GET /me` · `GET /files` (+ `recursive`, `updatedSince`, `cursor`) ·
-`POST /files` (multipart & JSON) · `POST /files/chunks` ·
-`GET /files/:id/download` · `DELETE /files/:id` ·
-`POST|DELETE /files/:id/public` ·
-`GET|POST /folders` · `GET|DELETE /folders/:id`
-
-Doc : <https://drivecord.app/docs/technique/api>
+| Phase | Repo | Contenu |
+|---|---|---|
+| 0 | desktop | ✅ Nettoyage du scaffold (retrait clé API / UI custom / client API Rust) |
+| 1 | desktop + web | Coquille : front Drivecord embarqué client-only, API → `drivecord.app` |
+| 2 | desktop | Webview de sync cachée, persistante en tray-only |
+| 3 | desktop | Pont natif fichiers (`notify`, commandes disque) |
+| 4 | web | `isDesktopApp()`, page `/desktop-sync`, réglages « Dossier synchronisé » |
+| 5 | web | Sync montante : watcher → chiffrer + chunker + upload Discord + `POST .../files` |
+| 6 | web | Sync descendante : poll `items` → `GET` + déchiffrer + écriture atomique |
+| 7 | web | Résolution de conflits (`nom (conflit AAAA-MM-JJ).ext`) |
+| 8 | desktop | Tray complet (pause, statut live) + autostart `--minimized` + réconciliation au boot |
+| 9 | desktop | Google OAuth en webview (navigateur système + deep link) si bloqué |
+| 10 | desktop | `cargo tauri build` → NSIS (CI sur tag `v*`) |

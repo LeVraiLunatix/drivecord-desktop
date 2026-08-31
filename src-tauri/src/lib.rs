@@ -1,11 +1,3 @@
-// The `api` client surface (uploads, download, public links, wire models) is
-// intentionally complete ahead of its callers — commands wire the rest in
-// B5–B8. Drop this once they're all reachable.
-#[allow(dead_code)]
-mod api;
-mod commands;
-mod config;
-mod error;
 mod tray;
 
 use tauri::Manager;
@@ -31,20 +23,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
             tray::create_tray(app.handle())?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::verify_key,
-            commands::set_api_key,
-            commands::has_api_key,
-            commands::clear_api_key,
-            commands::get_config,
-            commands::set_config,
-            commands::pick_sync_dir,
-        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
