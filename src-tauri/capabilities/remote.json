@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "desktop-login-handoff",
+  "description": "La page de login first-party sur drivecord.app (chargée dans la fenêtre pendant la connexion) peut remettre le token et basculer sur le shell.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["https://drivecord.app"]
+  },
+  "permissions": [
+    "allow-save-token",
+    "allow-get-token",
+    "allow-enter-shell",
+    "allow-enter-auth"
+  ]
+}

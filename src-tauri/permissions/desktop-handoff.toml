@@ -1,0 +1,25 @@
+"$schema" = "schemas/schema.json"
+
+# App-command permissions referenced by `capabilities/remote.json` so the
+# first-party login page on drivecord.app can complete the token handoff.
+# Local windows don't need these — app commands are allowed locally by default.
+
+[[permission]]
+identifier = "allow-save-token"
+description = "Autorise la commande save_token."
+commands.allow = ["save_token"]
+
+[[permission]]
+identifier = "allow-get-token"
+description = "Autorise la commande get_token."
+commands.allow = ["get_token"]
+
+[[permission]]
+identifier = "allow-enter-shell"
+description = "Autorise la commande enter_shell."
+commands.allow = ["enter_shell"]
+
+[[permission]]
+identifier = "allow-enter-auth"
+description = "Autorise la commande enter_auth."
+commands.allow = ["enter_auth"]
