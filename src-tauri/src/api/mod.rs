@@ -134,8 +134,12 @@ impl ApiClient {
     pub async fn list_folders(&self, recursive: bool) -> AppResult<Vec<FolderEntry>> {
         let r = self
             .send(|| {
-                let q: &[(&str, &str)] = if recursive { &[("recursive", "1")] } else { &[] };
-                self.http.get(self.url("/folders")).query(q)
+                let req = self.http.get(self.url("/folders"));
+                if recursive {
+                    req.query(&[("recursive", "1")])
+                } else {
+                    req
+                }
             })
             .await?;
         Ok(Self::json::<FoldersResponse>(r).await?.folders)

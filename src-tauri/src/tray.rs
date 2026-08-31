@@ -9,7 +9,13 @@ use crate::config;
 
 pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Ouvrir Drivecord", true, None::<&str>)?;
-    let pause = MenuItem::with_id(app, "pause", "Mettre la synchro en pause", true, None::<&str>)?;
+    let pause = MenuItem::with_id(
+        app,
+        "pause",
+        "Mettre la synchro en pause",
+        true,
+        None::<&str>,
+    )?;
     let status = MenuItem::with_id(app, "status", "État : inactif", false, None::<&str>)?;
     let folder = MenuItem::with_id(app, "folder", "Ouvrir le dossier local", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
