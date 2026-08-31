@@ -9,8 +9,9 @@ const SHELL_URL: &str = "http://tauri.localhost/";
 #[cfg(not(windows))]
 const SHELL_URL: &str = "tauri://localhost/";
 
-/// First-party login page (real NextAuth flow runs here, in the webview).
-const LOGIN_URL: &str = "https://drivecord.app/login?callbackUrl=%2Fdrive";
+/// First screen when there's no token — branded welcome, then the real
+/// first-party login/register flow runs from there inside the webview.
+const WELCOME_URL: &str = "https://drivecord.app/desktop-welcome";
 
 fn main_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<WebviewWindow<R>> {
     app.get_webview_window("main")
@@ -34,14 +35,14 @@ fn enter_shell<R: Runtime>(app: tauri::AppHandle<R>) {
 /// Send the window (back) to the first-party login page.
 #[tauri::command]
 fn enter_auth<R: Runtime>(app: tauri::AppHandle<R>) {
-    navigate(&app, LOGIN_URL);
+    navigate(&app, WELCOME_URL);
 }
 
 /// Clear the stored token and return to login.
 #[tauri::command]
 fn logout<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
     token::clear_token()?;
-    navigate(&app, LOGIN_URL);
+    navigate(&app, WELCOME_URL);
     Ok(())
 }
 
@@ -113,7 +114,7 @@ pub fn run() {
             // No token yet → send the window to first-party login. With a token,
             // the window keeps its default content (the embedded shell).
             if token::read().is_none() {
-                navigate(app.handle(), LOGIN_URL);
+                navigate(app.handle(), WELCOME_URL);
             }
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
