@@ -148,6 +148,21 @@ fn parse_blob(blob: &[u8]) -> Option<(String, String)> {
 }
 
 impl Filter for DriveFilter {
+    /// Approve "Free up space" (clic droit → Libérer de l'espace) — the file's
+    /// data is discarded, it goes back to a 0-byte ghost, and `fetch_data`
+    /// re-downloads it on next open.
+    fn dehydrate(
+        &self,
+        _request: Request,
+        ticket: ticket::Dehydrate,
+        _info: info::Dehydrate,
+    ) -> impl Future<Output = CResult<()>> {
+        async move {
+            ticket.pass().map_err(|_| CloudErrorKind::Unsuccessful)?;
+            Ok(())
+        }
+    }
+
     fn fetch_data(
         &self,
         request: Request,
