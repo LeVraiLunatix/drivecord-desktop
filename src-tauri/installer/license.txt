@@ -1,0 +1,8 @@
+Drivecord Desktop
+
+Client Windows non officiel pour Drivecord (drivecord.app).
+Distribue sous licence MIT.
+
+Code source : https://github.com/LeVraiLunatix/drivecord-desktop
+
+En installant ce logiciel, vous acceptez la licence MIT ci-dessus.
