@@ -3,6 +3,7 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,23 +14,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The frontend is Drivecord's own static shell, built from the public
+      # `discloud` repo by scripts/build-shell.mjs → we need it side-by-side.
+      - uses: actions/checkout@v4
+        with:
+          repository: LeVraiLunatix/drivecord
+          path: discloud-src
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+
+      - run: npm ci
+      - run: npm ci
+        working-directory: discloud-src
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
 
-      - run: npm ci
-
       - name: Build + draft release (NSIS installer)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCLOUD_DIR: discloud-src
         with:
-          tagName: ${{ github.ref_name }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0-dev' }}
           releaseName: "Drivecord Desktop ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
