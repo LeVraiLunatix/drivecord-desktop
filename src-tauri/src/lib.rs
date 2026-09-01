@@ -94,44 +94,55 @@ fn focus_main<R: Runtime>(app: &tauri::AppHandle<R>) {
 
 // ── Folder-sync engine (kDrive-style — Windows only) ─────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sync_status(state: tauri::State<'_, Arc<sync::SyncEngine>>) -> sync::SyncStatus {
     state.status()
 }
 
 #[tauri::command]
-fn sync_pick_folder(app: tauri::AppHandle) -> Option<String> {
+async fn sync_pick_folder(app: tauri::AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
-    let path = app.dialog().file().blocking_pick_folder()?;
-    path.into_path().ok().map(|p| p.display().to_string())
+    // Callback form (not `blocking_pick_folder`): the plugin marshals the
+    // native folder dialog onto the right thread itself. Calling the blocking
+    // variant from a command's worker thread trips COM apartment issues on
+    // Windows.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    rx.await
+        .ok()
+        .flatten()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sync_set_root(state: tauri::State<'_, Arc<sync::SyncEngine>>, path: String) {
     state.set_root(std::path::PathBuf::from(path));
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sync_enable(state: tauri::State<'_, Arc<sync::SyncEngine>>) {
     state.start();
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sync_disable(state: tauri::State<'_, Arc<sync::SyncEngine>>) {
     state.stop();
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sync_now(state: tauri::State<'_, Arc<sync::SyncEngine>>) {
     state.reconcile_now();
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sync_set_drive_enabled(state: tauri::State<'_, Arc<sync::SyncEngine>>, drive_id: String, enabled: bool) {
     state.set_drive_enabled(drive_id, enabled);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sync_open_folder(state: tauri::State<'_, Arc<sync::SyncEngine>>) -> Result<(), String> {
     let root = state.status().root.ok_or_else(|| "Aucun dossier choisi.".to_string())?;
     std::process::Command::new("explorer")

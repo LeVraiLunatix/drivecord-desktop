@@ -1,0 +1,46 @@
+"$schema" = "schemas/schema.json"
+
+# ACL permissions for the folder-sync commands. Tauri 2 does not auto-generate
+# permissions for app commands, so every command invoked from the embedded
+# shell (a webview the `main` window's capabilities gate) must be listed here
+# and referenced from `capabilities/default.json` + `capabilities/remote.json`.
+
+[[permission]]
+identifier = "allow-sync-status"
+description = "Autorise la commande sync_status."
+commands.allow = ["sync_status"]
+
+[[permission]]
+identifier = "allow-sync-pick-folder"
+description = "Autorise la commande sync_pick_folder."
+commands.allow = ["sync_pick_folder"]
+
+[[permission]]
+identifier = "allow-sync-set-root"
+description = "Autorise la commande sync_set_root."
+commands.allow = ["sync_set_root"]
+
+[[permission]]
+identifier = "allow-sync-enable"
+description = "Autorise la commande sync_enable."
+commands.allow = ["sync_enable"]
+
+[[permission]]
+identifier = "allow-sync-disable"
+description = "Autorise la commande sync_disable."
+commands.allow = ["sync_disable"]
+
+[[permission]]
+identifier = "allow-sync-now"
+description = "Autorise la commande sync_now."
+commands.allow = ["sync_now"]
+
+[[permission]]
+identifier = "allow-sync-set-drive-enabled"
+description = "Autorise la commande sync_set_drive_enabled."
+commands.allow = ["sync_set_drive_enabled"]
+
+[[permission]]
+identifier = "allow-sync-open-folder"
+description = "Autorise la commande sync_open_folder."
+commands.allow = ["sync_open_folder"]

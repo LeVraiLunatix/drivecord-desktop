@@ -56,6 +56,17 @@ pub async fn reconcile_all(ctx: &EngineCtx) {
     let mut drive_statuses = Vec::new();
     let mut new_index = FileIndex::default();
 
+    let icon = ctx
+        .config_path
+        .parent()
+        .and_then(super::folder_style::ensure_icon_file);
+
+    // The registration's `with_icon` only styles the navigation-pane entry —
+    // give the physical sync root folder the same icon via desktop.ini too.
+    if let Some(icon) = icon.as_deref() {
+        super::folder_style::apply_icon(&ctx.root, icon);
+    }
+
     for wh in &webhooks {
         let Some(enc_key) = wh.enc_key.clone() else {
             // No drive key yet (never opened on the web) — nothing to sync safely.
@@ -71,7 +82,7 @@ pub async fn reconcile_all(ctx: &EngineCtx) {
             },
         );
         let file_count = if enabled {
-            match reconcile_drive(ctx, &api, &wh.drive_id, &wh.name, &mut new_index).await {
+            match reconcile_drive(ctx, &api, &wh.drive_id, &wh.name, icon.as_deref(), &mut new_index).await {
                 Ok(n) => n,
                 Err(e) => {
                     eprintln!("sync: drive {} : {e}", wh.drive_id);
@@ -100,16 +111,42 @@ pub async fn reconcile_all(ctx: &EngineCtx) {
     ctx.touch_status();
 }
 
+/// Create a placeholder *directory* under `parent` if it isn't there yet, and
+/// give it the Drivecord folder icon. Plain `std::fs::create_dir` inside a
+/// connected Cloud Files sync root does not reliably stick — the folder has to
+/// be a placeholder like the files.
+fn ensure_dir_placeholder(
+    parent: &std::path::Path,
+    name: &str,
+    icon: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    let abs = parent.join(name);
+    if !abs.exists() {
+        let ph = PlaceholderFile::new(name)
+            .metadata(Metadata::directory())
+            .mark_in_sync();
+        if let Err(e) = ph.create::<&std::path::Path>(parent) {
+            // Fall back to a plain dir (better than nothing outside a sync root).
+            let _ = std::fs::create_dir_all(&abs);
+            eprintln!("sync: création du dossier fantôme {abs:?} : {e}");
+        }
+    }
+    if let Some(icon) = icon {
+        super::folder_style::apply_icon(&abs, icon);
+    }
+    abs
+}
+
 /// Ensure `<root>/<drive name>/…` mirrors one drive's tree. Returns the file count.
 async fn reconcile_drive(
     ctx: &EngineCtx,
     api: &api::Api,
     drive_id: &str,
     drive_name: &str,
+    icon: Option<&std::path::Path>,
     index: &mut FileIndex,
 ) -> Result<u32, String> {
-    let drive_root = ctx.root.join(sanitize(drive_name));
-    std::fs::create_dir_all(&drive_root).map_err(|e| e.to_string())?;
+    let drive_root = ensure_dir_placeholder(&ctx.root, &sanitize(drive_name), icon);
     index
         .path_to_folder
         .insert(drive_root.clone(), (drive_id.to_string(), String::new()));
@@ -128,8 +165,7 @@ async fn reconcile_drive(
             let Some(parent_abs) = resolved.get(&f.parent_id).cloned() else {
                 return true;
             };
-            let abs = parent_abs.join(sanitize(&f.name));
-            let _ = std::fs::create_dir_all(&abs);
+            let abs = ensure_dir_placeholder(&parent_abs, &sanitize(&f.name), icon);
             index
                 .path_to_folder
                 .insert(abs.clone(), (drive_id.to_string(), f.id.clone()));

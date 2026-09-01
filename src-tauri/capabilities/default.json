@@ -17,6 +17,14 @@
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "allow-sync-status",
+    "allow-sync-pick-folder",
+    "allow-sync-set-root",
+    "allow-sync-enable",
+    "allow-sync-disable",
+    "allow-sync-now",
+    "allow-sync-set-drive-enabled",
+    "allow-sync-open-folder"
   ]
 }

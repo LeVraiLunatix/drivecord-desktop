@@ -18,6 +18,7 @@ mod cf;
 mod config;
 mod crypto;
 mod discord;
+mod folder_style;
 mod mirror;
 mod upload;
 
@@ -129,6 +130,7 @@ pub struct SyncEngine {
     config: RwLock<SyncConfig>,
     status: Arc<RwLock<SyncStatus>>,
     cmd_tx: Arc<RwLock<Option<tokio::sync::mpsc::Sender<EngineCmd>>>>,
+    worker: RwLock<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl SyncEngine {
@@ -150,6 +152,7 @@ impl SyncEngine {
             })),
             config: RwLock::new(config),
             cmd_tx: Arc::new(RwLock::new(None)),
+            worker: RwLock::new(None),
         });
         if engine.config.read().enabled {
             engine.start();
@@ -168,12 +171,22 @@ impl SyncEngine {
     }
 
     pub fn set_root(&self, root: PathBuf) {
-        let mut cfg = self.config.write();
-        cfg.root = Some(root.clone());
-        self.save_config(&cfg);
-        drop(cfg);
+        let was_running = self.is_running();
+        if was_running {
+            // Cleanly tear the current sync root down before repointing.
+            self.stop_and_join();
+        }
+        {
+            let mut cfg = self.config.write();
+            cfg.root = Some(root.clone());
+            self.save_config(&cfg);
+        }
         self.status.write().root = Some(root.display().to_string());
-        self.touch();
+        if was_running {
+            self.start(); // re-registers on the new folder
+        } else {
+            self.touch();
+        }
     }
 
     pub fn is_running(&self) -> bool {
@@ -233,7 +246,7 @@ impl SyncEngine {
         let app_for_end = self.app.clone();
         let status_for_end = self.status.clone();
 
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("drivecord-sync".into())
             .spawn(move || {
                 cf::run_worker(ctx, rx);
@@ -248,6 +261,21 @@ impl SyncEngine {
                 let _ = app_for_end.emit(STATUS_EVENT, snapshot);
             })
             .expect("spawn du thread de synchro");
+        *self.worker.write() = Some(handle);
+    }
+
+    /// Signal the worker to stop and block until it has fully torn down the
+    /// sync root (deregistered) — so the caller can immediately re-`start()`
+    /// on a different folder without racing the registration.
+    fn stop_and_join(&self) {
+        if let Some(tx) = self.cmd_tx.read().clone() {
+            let _ = tx.try_send(EngineCmd::Stop);
+        }
+        let handle = self.worker.write().take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+        *self.cmd_tx.write() = None;
     }
 
     pub fn stop(&self) {
@@ -256,11 +284,11 @@ impl SyncEngine {
             cfg.enabled = false;
             self.save_config(&cfg);
         }
-        if let Some(tx) = self.cmd_tx.read().clone() {
-            let _ = tx.try_send(EngineCmd::Stop);
-        }
+        self.stop_and_join();
         let mut s = self.status.write();
         s.enabled = false;
+        s.running = false;
+        s.state = "idle".into();
         drop(s);
         self.touch();
     }

@@ -213,17 +213,56 @@ pub async fn download_chunk(
     .await
 }
 
-/// Download every chunk in order and concatenate — the raw ciphertext blob.
-pub async fn download_all(
+/// Download every chunk (up to `parallel` at once), concatenate in order, and
+/// call `on_progress(chunks_done, chunks_total)` after each one — the caller
+/// uses that to feed `CfReportProviderProgress`, which also resets the OS's
+/// 60-second hydration-callback timeout (otherwise big videos get cancelled
+/// mid-download).
+pub async fn download_all<F>(
     http: &reqwest::Client,
     webhook_url: &str,
     chunks: &[ChunkRef],
-) -> Result<Vec<u8>> {
+    parallel: usize,
+    mut on_progress: F,
+) -> Result<Vec<u8>>
+where
+    F: FnMut(usize, usize),
+{
     let mut ordered = chunks.to_vec();
     ordered.sort_by_key(|c| c.index);
-    let mut out = Vec::new();
-    for c in &ordered {
-        out.extend_from_slice(&download_chunk(http, webhook_url, c).await?);
+    let total = ordered.len();
+    let parallel = parallel.max(1);
+
+    let mut parts: Vec<Vec<u8>> = vec![Vec::new(); total];
+    let mut set: tokio::task::JoinSet<(usize, Result<Vec<u8>>)> = tokio::task::JoinSet::new();
+    let mut next = 0usize;
+    let mut done = 0usize;
+
+    let spawn_one = |set: &mut tokio::task::JoinSet<(usize, Result<Vec<u8>>)>, idx: usize| {
+        let http = http.clone();
+        let url = webhook_url.to_string();
+        let chunk = ordered[idx].clone();
+        set.spawn(async move { (idx, download_chunk(&http, &url, &chunk).await) });
+    };
+
+    while next < total && set.len() < parallel {
+        spawn_one(&mut set, next);
+        next += 1;
+    }
+    while let Some(joined) = set.join_next().await {
+        let (idx, res) = joined.map_err(|e| e.to_string())?;
+        parts[idx] = res?;
+        done += 1;
+        on_progress(done, total);
+        if next < total {
+            spawn_one(&mut set, next);
+            next += 1;
+        }
+    }
+
+    let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
+    for p in parts {
+        out.extend(p);
     }
     Ok(out)
 }

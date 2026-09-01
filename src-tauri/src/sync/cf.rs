@@ -33,10 +33,17 @@ pub(crate) fn run_worker(ctx: EngineCtx, mut cmd_rx: tokio::sync::mpsc::Receiver
 
 async fn async_main(ctx: EngineCtx, cmd_rx: &mut tokio::sync::mpsc::Receiver<EngineCmd>) {
     let root = ctx.root.clone();
-    if let Err(e) = ensure_registered(&root) {
-        ctx.set_error(format!("enregistrement de la racine de synchro : {e}"));
-        return;
-    }
+    let icon = ctx
+        .config_path
+        .parent()
+        .and_then(super::folder_style::ensure_icon_file);
+    let sync_root_id = match ensure_registered(&root, icon.as_deref()) {
+        Ok(id) => id,
+        Err(e) => {
+            ctx.set_error(format!("enregistrement de la racine de synchro : {e}"));
+            return;
+        }
+    };
 
     let handle = tokio::runtime::Handle::current();
     let filter = DriveFilter(ctx.clone());
@@ -67,26 +74,44 @@ async fn async_main(ctx: EngineCtx, cmd_rx: &mut tokio::sync::mpsc::Receiver<Eng
     }
 
     drop(connection);
+    // Sync stopped (user disabled it, or the app is quitting) — deregister so
+    // the folder becomes a plain, deletable directory again. It's re-registered
+    // on the next `start()`.
+    let _ = sync_root_id.unregister();
 }
 
 /// Registers the sync root once (idempotent — the id is deterministic per
 /// provider+user). Changing the chosen folder after the first registration
 /// isn't handled here; disable sync before picking a different folder.
-fn ensure_registered(root: &Path) -> Result<SyncRootId, String> {
+fn ensure_registered(root: &Path, icon_path: Option<&Path>) -> Result<SyncRootId, String> {
     let id = SyncRootIdBuilder::new(super::PROVIDER_NAME)
         .user_security_id(SecurityId::current_user().map_err(|e| e.to_string())?)
         .build();
-    if !id.is_registered().map_err(|e| e.to_string())? {
-        id.register(
-            SyncRootInfo::default()
-                .with_display_name(super::DISPLAY_NAME)
-                .with_hydration_type(HydrationType::Full)
-                .with_population_type(PopulationType::Full)
-                .with_path(root)
-                .map_err(|e| e.to_string())?,
-        )
+
+    // Windows refuses a registration with an empty icon resource. Prefer the
+    // brand folder icon; fall back to the app exe, then a generic shell icon.
+    let icon = icon_path
+        .map(|p| format!("{},0", p.display()))
+        .or_else(|| std::env::current_exe().ok().map(|p| format!("{},0", p.display())))
+        .unwrap_or_else(|| "%SystemRoot%\\system32\\imageres.dll,-1043".to_string());
+
+    let info = SyncRootInfo::default()
+        .with_display_name(super::DISPLAY_NAME)
+        .with_icon(icon)
+        .with_version(env!("CARGO_PKG_VERSION"))
+        .with_hydration_type(HydrationType::Full)
+        // AlwaysFull: the OS assumes we've populated everything and never calls
+        // `fetch_placeholders`. `Full` in this crate is the *on-demand* mode,
+        // which would need a `fetch_placeholders` impl (we populate eagerly
+        // from the mirror loop instead).
+        .with_population_type(PopulationType::AlwaysFull)
+        .with_path(root)
         .map_err(|e| e.to_string())?;
-    }
+
+    // Start from a clean slate every run: deregister the old registration (no-op
+    // if absent) then re-register with the current icon / version / policy.
+    let _ = id.unregister();
+    id.register(info).map_err(|e| e.to_string())?;
     Ok(id)
 }
 
@@ -126,9 +151,28 @@ impl Filter for DriveFilter {
                 return Err(CloudErrorKind::InvalidRequest);
             };
 
-            let ciphertext = discord::download_all(&ctx.http, &secrets.webhook_url, &entry.chunks)
-                .await
-                .map_err(|_| CloudErrorKind::NetworkUnavailable)?;
+            // Total the OS expects on disk (the decrypted size). Used only to
+            // drive the progress bar / keep the 60s callback timer alive.
+            let logical = if entry.enc_iv.is_some() {
+                entry.size.saturating_sub(16)
+            } else {
+                entry.size
+            };
+
+            let ciphertext = discord::download_all(
+                &ctx.http,
+                &secrets.webhook_url,
+                &entry.chunks,
+                4,
+                |done, total| {
+                    let completed =
+                        (logical as u128 * done as u128 / total.max(1) as u128) as u64;
+                    let _ = ticket.report_progress(logical, completed);
+                },
+            )
+            .await
+            .map_err(|_| CloudErrorKind::NetworkUnavailable)?;
+
             let plain = match entry.enc_iv.as_deref() {
                 Some(iv) => crypto::decrypt(&secrets.enc_key, iv, &ciphertext)
                     .map_err(|_| CloudErrorKind::ValidationFailed)?,
@@ -210,6 +254,13 @@ impl Filter for DriveFilter {
             for path in changes {
                 if ctx.index.read().path_to_file.contains_key(&path) {
                     continue; // already a known placeholder / synced file
+                }
+                if path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.eq_ignore_ascii_case(super::folder_style::DESKTOP_INI))
+                {
+                    continue; // our own folder-icon marker, never upload it
                 }
                 if !path.is_file() {
                     continue;
