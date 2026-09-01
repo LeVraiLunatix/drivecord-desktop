@@ -129,6 +129,9 @@ pub struct SyncEngine {
     config_path: PathBuf,
     config: RwLock<SyncConfig>,
     status: Arc<RwLock<SyncStatus>>,
+    /// Shared with the worker's `EngineCtx` so the UI can resolve a file's
+    /// on-disk path (e.g. "open this heavy video in the synced folder").
+    index: Arc<RwLock<FileIndex>>,
     cmd_tx: Arc<RwLock<Option<tokio::sync::mpsc::Sender<EngineCmd>>>>,
     worker: RwLock<Option<std::thread::JoinHandle<()>>>,
 }
@@ -151,6 +154,7 @@ impl SyncEngine {
                 ..Default::default()
             })),
             config: RwLock::new(config),
+            index: Arc::new(RwLock::new(FileIndex::default())),
             cmd_tx: Arc::new(RwLock::new(None)),
             worker: RwLock::new(None),
         });
@@ -162,6 +166,15 @@ impl SyncEngine {
 
     pub fn status(&self) -> SyncStatus {
         self.status.read().clone()
+    }
+
+    /// Local path of a synced file, if the mirror has placed it yet.
+    pub fn file_local_path(&self, drive_id: &str, file_id: &str) -> Option<PathBuf> {
+        let idx = self.index.read();
+        idx.path_to_file
+            .iter()
+            .find(|(_, (d, f))| d == drive_id && f == file_id)
+            .map(|(p, _)| p.clone())
     }
 
     fn save_config(&self, cfg: &SyncConfig) {
@@ -233,12 +246,19 @@ impl SyncEngine {
             app: self.app.clone(),
             http: reqwest::Client::builder()
                 .user_agent("drivecord-desktop-sync")
+                // Wide connection pool — hydration fans many parallel chunk
+                // GETs at cdn.discordapp.com.
+                .pool_max_idle_per_host(32)
+                .pool_idle_timeout(std::time::Duration::from_secs(90))
                 .build()
                 .unwrap_or_default(),
             token,
             root,
             config_path: self.config_path.clone(),
-            index: Arc::new(RwLock::new(FileIndex::default())),
+            index: {
+                *self.index.write() = FileIndex::default();
+                self.index.clone()
+            },
             status: self.status.clone(),
             uploading: Arc::new(RwLock::new(HashSet::new())),
         };

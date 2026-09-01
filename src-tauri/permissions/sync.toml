@@ -44,3 +44,8 @@ commands.allow = ["sync_set_drive_enabled"]
 identifier = "allow-sync-open-folder"
 description = "Autorise la commande sync_open_folder."
 commands.allow = ["sync_open_folder"]
+
+[[permission]]
+identifier = "allow-sync-open-file"
+description = "Autorise la commande sync_open_file."
+commands.allow = ["sync_open_file"]

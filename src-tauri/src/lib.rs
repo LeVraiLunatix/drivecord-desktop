@@ -152,6 +152,23 @@ fn sync_open_folder(state: tauri::State<'_, Arc<sync::SyncEngine>>) -> Result<()
     Ok(())
 }
 
+#[tauri::command(async)]
+fn sync_open_file(
+    state: tauri::State<'_, Arc<sync::SyncEngine>>,
+    drive_id: String,
+    file_id: String,
+) -> Result<(), String> {
+    let path = state.file_local_path(&drive_id, &file_id).ok_or_else(|| {
+        "Fichier pas encore dans le dossier synchronisé — active la synchro et attends qu'elle se termine.".to_string()
+    })?;
+    // `explorer <file>` launches it with its default app on Windows 10/11.
+    std::process::Command::new("explorer")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -210,6 +227,7 @@ pub fn run() {
                         sync_now,
                         sync_set_drive_enabled,
                         sync_open_folder,
+                        sync_open_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

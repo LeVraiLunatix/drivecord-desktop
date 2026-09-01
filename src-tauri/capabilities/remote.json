@@ -27,6 +27,7 @@
     "allow-sync-disable",
     "allow-sync-now",
     "allow-sync-set-drive-enabled",
-    "allow-sync-open-folder"
+    "allow-sync-open-folder",
+    "allow-sync-open-file"
   ]
 }

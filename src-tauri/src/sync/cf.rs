@@ -159,14 +159,16 @@ impl Filter for DriveFilter {
                 entry.size
             };
 
+            // Download phase counts for ~90% of the progress bar, the disk
+            // write for the last ~10%.
             let ciphertext = discord::download_all(
                 &ctx.http,
                 &secrets.webhook_url,
                 &entry.chunks,
-                4,
+                16,
                 |done, total| {
-                    let completed =
-                        (logical as u128 * done as u128 / total.max(1) as u128) as u64;
+                    let completed = (logical as u128 * 9 * done as u128
+                        / (10 * total.max(1) as u128)) as u64;
                     let _ = ticket.report_progress(logical, completed);
                 },
             )
@@ -179,7 +181,25 @@ impl Filter for DriveFilter {
                 None => ciphertext,
             };
 
-            ticket.write_at(&plain, 0).map_err(|_| CloudErrorKind::InvalidRequest)?;
+            // Write in ~8 MiB blocks, pinging progress between each — a single
+            // 200 MB CfExecute stalls Explorer and risks the 60s callback
+            // timeout. The final block ends exactly on the logical size.
+            const BLOCK: usize = 8 * 1024 * 1024;
+            let total = plain.len();
+            let mut offset = 0usize;
+            while offset < total {
+                let end = (offset + BLOCK).min(total);
+                ticket
+                    .write_at(&plain[offset..end], offset as u64)
+                    .map_err(|_| CloudErrorKind::InvalidRequest)?;
+                offset = end;
+                let completed =
+                    (logical as u128 * (9 * total as u128 + offset as u128) / (10 * total.max(1) as u128)) as u64;
+                let _ = ticket.report_progress(logical, completed.min(logical));
+            }
+            if total == 0 {
+                ticket.write_at(&[], 0).map_err(|_| CloudErrorKind::InvalidRequest)?;
+            }
             Ok(())
         }
     }
