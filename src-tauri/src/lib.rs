@@ -1,5 +1,9 @@
+#[cfg(windows)]
+mod sync;
 mod token;
 mod tray;
+
+use std::sync::Arc;
 
 use tauri::{Manager, Runtime, WebviewWindow};
 
@@ -88,6 +92,55 @@ fn focus_main<R: Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+// ── Folder-sync engine (kDrive-style — Windows only) ─────────────────────────
+
+#[tauri::command]
+fn sync_status(state: tauri::State<'_, Arc<sync::SyncEngine>>) -> sync::SyncStatus {
+    state.status()
+}
+
+#[tauri::command]
+fn sync_pick_folder(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let path = app.dialog().file().blocking_pick_folder()?;
+    path.into_path().ok().map(|p| p.display().to_string())
+}
+
+#[tauri::command]
+fn sync_set_root(state: tauri::State<'_, Arc<sync::SyncEngine>>, path: String) {
+    state.set_root(std::path::PathBuf::from(path));
+}
+
+#[tauri::command]
+fn sync_enable(state: tauri::State<'_, Arc<sync::SyncEngine>>) {
+    state.start();
+}
+
+#[tauri::command]
+fn sync_disable(state: tauri::State<'_, Arc<sync::SyncEngine>>) {
+    state.stop();
+}
+
+#[tauri::command]
+fn sync_now(state: tauri::State<'_, Arc<sync::SyncEngine>>) {
+    state.reconcile_now();
+}
+
+#[tauri::command]
+fn sync_set_drive_enabled(state: tauri::State<'_, Arc<sync::SyncEngine>>, drive_id: String, enabled: bool) {
+    state.set_drive_enabled(drive_id, enabled);
+}
+
+#[tauri::command]
+fn sync_open_folder(state: tauri::State<'_, Arc<sync::SyncEngine>>) -> Result<(), String> {
+    let root = state.status().root.ok_or_else(|| "Aucun dossier choisi.".to_string())?;
+    std::process::Command::new("explorer")
+        .arg(&root)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -109,6 +162,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            #[cfg(windows)]
+            {
+                let engine = sync::SyncEngine::init(app.handle());
+                app.manage(engine);
+            }
+
             tray::create_tray(app.handle())?;
 
             // No token yet → send the window to first-party login. With a token,
@@ -132,6 +191,14 @@ pub fn run() {
             win_toggle_maximize,
             win_close,
             win_start_drag,
+                        sync_status,
+                        sync_pick_folder,
+                        sync_set_root,
+                        sync_enable,
+                        sync_disable,
+                        sync_now,
+                        sync_set_drive_enabled,
+                        sync_open_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
