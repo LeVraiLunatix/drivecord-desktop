@@ -57,6 +57,22 @@ async fn async_main(ctx: EngineCtx, cmd_rx: &mut tokio::sync::mpsc::Receiver<Eng
 
     mirror::reconcile_all(&ctx).await;
 
+    // Disk -> cloud: watch the root for files the user drops in.
+    let (watch_tx, mut watch_rx) = tokio::sync::mpsc::unbounded_channel::<std::path::PathBuf>();
+    let _watcher = match super::watcher::spawn(&root, watch_tx) {
+        Ok(w) => Some(w),
+        Err(e) => {
+            eprintln!("sync: watcher fs indisponible ({e}) — l'upload auto ne marchera pas");
+            None
+        }
+    };
+    let watch_ctx = ctx.clone();
+    let watch_task = tokio::spawn(async move {
+        while let Some(path) = watch_rx.recv().await {
+            consider_local_path(&watch_ctx, path);
+        }
+    });
+
     let mut ticker = tokio::time::interval(Duration::from_secs(RECONCILE_INTERVAL_SECS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ticker.tick().await; // consume the immediate first tick — we just reconciled above
@@ -73,6 +89,8 @@ async fn async_main(ctx: EngineCtx, cmd_rx: &mut tokio::sync::mpsc::Receiver<Eng
         }
     }
 
+    watch_task.abort();
+    drop(_watcher);
     drop(connection);
     // Sync stopped (user disabled it, or the app is quitting) — deregister so
     // the folder becomes a plain, deletable directory again. It's re-registered
@@ -265,40 +283,61 @@ impl Filter for DriveFilter {
         }
     }
 
-    /// Fires for any change under the sync root (crate-managed
-    /// `ReadDirectoryChangesW` watcher). Used to catch real files the user
-    /// drops in — anything not already a known placeholder gets uploaded.
+    /// The crate's own watcher only reports attribute changes (pin/unpin) —
+    /// new files are caught by our `notify` watcher (see `watcher.rs`), which
+    /// also calls `consider_local_path`.
     fn state_changed(&self, changes: Vec<std::path::PathBuf>) -> impl Future<Output = ()> {
         let ctx = self.0.clone();
         async move {
             for path in changes {
-                if ctx.index.read().path_to_file.contains_key(&path) {
-                    continue; // already a known placeholder / synced file
-                }
-                if path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.eq_ignore_ascii_case(super::folder_style::DESKTOP_INI))
-                {
-                    continue; // our own folder-icon marker, never upload it
-                }
-                if !path.is_file() {
-                    continue;
-                }
-                let Some(parent) = path.parent() else { continue };
-                let Some((drive_id, folder_id)) = ctx.index.read().path_to_folder.get(parent).cloned() else {
-                    continue; // not under a recognised drive folder
-                };
-                let Some(secrets) = ctx.index.read().drives.get(&drive_id).cloned() else {
-                    continue;
-                };
-                let ctx2 = ctx.clone();
-                tokio::spawn(async move {
-                    try_upload_settled(ctx2, drive_id, secrets, folder_id, path).await;
-                });
+                consider_local_path(&ctx, path);
             }
         }
     }
+}
+
+/// Is this path a placeholder stub we (or the OS) created but that has no real
+/// data on disk yet? Such files must never be treated as "new local content".
+fn is_placeholder_stub(path: &std::path::Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+    const RECALL_ON_OPEN: u32 = 0x0004_0000;
+    std::fs::metadata(path)
+        .map(|m| m.file_attributes() & (RECALL_ON_DATA_ACCESS | RECALL_ON_OPEN) != 0)
+        .unwrap_or(false)
+}
+
+/// Decide whether `path` is a brand-new real file the user dropped in and, if
+/// so, kick off its upload. Safe to call for any path under the sync root.
+pub(crate) fn consider_local_path(ctx: &EngineCtx, path: std::path::PathBuf) {
+    if ctx.index.read().path_to_file.contains_key(&path) {
+        return; // already a known placeholder / synced file
+    }
+    if path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case(super::folder_style::DESKTOP_INI))
+    {
+        return; // our own folder-icon marker
+    }
+    if !path.is_file() || is_placeholder_stub(&path) {
+        return;
+    }
+    let Some(parent) = path.parent() else { return };
+    let (drive_id, folder_id) = {
+        let idx = ctx.index.read();
+        match idx.path_to_folder.get(parent).cloned() {
+            Some(v) => v,
+            None => return, // not under a recognised drive folder
+        }
+    };
+    let Some(secrets) = ctx.index.read().drives.get(&drive_id).cloned() else {
+        return;
+    };
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        try_upload_settled(ctx, drive_id, secrets, folder_id, path).await;
+    });
 }
 
 /// Wait for a newly-seen file's size to stop changing (the user may still be

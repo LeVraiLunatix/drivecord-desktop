@@ -30,6 +30,7 @@ aes-gcm = "0.10"
 base64 = "0.22"
 parking_lot = "0.12"
 nanoid = "0.4"
+notify = "6"
 
 [target.'cfg(windows)'.dependencies]
 cloud-filter = "0.0.6"

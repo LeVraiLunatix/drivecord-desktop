@@ -21,6 +21,7 @@ mod discord;
 mod folder_style;
 mod mirror;
 mod upload;
+mod watcher;
 
 use std::{
     collections::{HashMap, HashSet},
