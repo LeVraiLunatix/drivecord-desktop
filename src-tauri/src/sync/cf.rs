@@ -322,12 +322,10 @@ fn is_placeholder_stub(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Decide whether `path` is a brand-new real file the user dropped in and, if
-/// so, kick off its upload. Safe to call for any path under the sync root.
+/// Decide whether `path` is brand-new local content the user dropped in and, if
+/// so, act on it (create the folder cloud-side, or upload the file). Safe to
+/// call for any path under the sync root.
 pub(crate) fn consider_local_path(ctx: &EngineCtx, path: std::path::PathBuf) {
-    if ctx.index.read().path_to_file.contains_key(&path) {
-        return; // already a known placeholder / synced file
-    }
     if path
         .file_name()
         .and_then(|n| n.to_str())
@@ -335,10 +333,50 @@ pub(crate) fn consider_local_path(ctx: &EngineCtx, path: std::path::PathBuf) {
     {
         return; // our own folder-icon marker
     }
+    let Some(parent) = path.parent() else { return };
+
+    // A new subfolder dropped under a known drive folder → create it cloud-side,
+    // index it, then re-scan what's already been copied into it.
+    if path.is_dir() {
+        if ctx.index.read().path_to_folder.contains_key(&path) {
+            return;
+        }
+        let Some((drive_id, parent_folder_id)) =
+            ctx.index.read().path_to_folder.get(parent).cloned()
+        else {
+            return;
+        };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            return;
+        };
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            let id = nanoid::nanoid!(12);
+            if api::Api::new(ctx.http.clone(), ctx.token.clone())
+                .create_folder(&drive_id, &id, &parent_folder_id, &name)
+                .await
+                .is_ok()
+            {
+                ctx.index
+                    .write()
+                    .path_to_folder
+                    .insert(path.clone(), (drive_id, id));
+                if let Ok(rd) = std::fs::read_dir(&path) {
+                    for entry in rd.flatten() {
+                        consider_local_path(&ctx, entry.path());
+                    }
+                }
+            }
+        });
+        return;
+    }
+
+    if ctx.index.read().path_to_file.contains_key(&path) {
+        return; // already a known placeholder / synced file
+    }
     if !path.is_file() || is_placeholder_stub(&path) {
         return;
     }
-    let Some(parent) = path.parent() else { return };
     let (drive_id, folder_id) = {
         let idx = ctx.index.read();
         match idx.path_to_folder.get(parent).cloned() {
