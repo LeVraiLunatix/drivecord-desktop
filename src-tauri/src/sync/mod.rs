@@ -209,8 +209,8 @@ fn open_uploads_window(app: &AppHandle) {
         )
         .title("Import Drivecord")
         .inner_size(400.0, 460.0)
-        .min_inner_size(340.0, 240.0)
         .resizable(false)
+        .decorations(false)
         .always_on_top(true)
         .skip_taskbar(false)
         .build();

@@ -50,38 +50,32 @@ fn logout<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 
-// ── Custom window controls (the OS title bar is hidden — `decorations: false`) ──
+// ── Custom window controls (OS title bar hidden — `decorations: false`) ──
+// Act on the *calling* window (Tauri injects it), so the same traffic lights
+// drive the main shell and the standalone "Import Drivecord" window.
 
 #[tauri::command]
-fn win_minimize<R: Runtime>(app: tauri::AppHandle<R>) {
-    if let Some(w) = main_window(&app) {
-        let _ = w.minimize();
+fn win_minimize<R: Runtime>(window: WebviewWindow<R>) {
+    let _ = window.minimize();
+}
+
+#[tauri::command]
+fn win_toggle_maximize<R: Runtime>(window: WebviewWindow<R>) {
+    if window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    } else {
+        let _ = window.maximize();
     }
 }
 
 #[tauri::command]
-fn win_toggle_maximize<R: Runtime>(app: tauri::AppHandle<R>) {
-    if let Some(w) = main_window(&app) {
-        if w.is_maximized().unwrap_or(false) {
-            let _ = w.unmaximize();
-        } else {
-            let _ = w.maximize();
-        }
-    }
+fn win_close<R: Runtime>(window: WebviewWindow<R>) {
+    let _ = window.close();
 }
 
 #[tauri::command]
-fn win_close<R: Runtime>(app: tauri::AppHandle<R>) {
-    if let Some(w) = main_window(&app) {
-        let _ = w.close();
-    }
-}
-
-#[tauri::command]
-fn win_start_drag<R: Runtime>(app: tauri::AppHandle<R>) {
-    if let Some(w) = main_window(&app) {
-        let _ = w.start_dragging();
-    }
+fn win_start_drag<R: Runtime>(window: WebviewWindow<R>) {
+    let _ = window.start_dragging();
 }
 
 fn focus_main<R: Runtime>(app: &tauri::AppHandle<R>) {
