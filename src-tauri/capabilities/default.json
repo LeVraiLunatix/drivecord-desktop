@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions de la fenêtre principale",
+  "description": "Permissions des fenêtres locales (shell + fenêtre d'import)",
   "windows": [
-    "main"
+    "main",
+    "uploads"
   ],
   "permissions": [
     "core:default",
@@ -26,6 +27,7 @@
     "allow-sync-now",
     "allow-sync-set-drive-enabled",
     "allow-sync-open-folder",
-    "allow-sync-open-file"
+    "allow-sync-open-file",
+    "allow-sync-uploads-status"
   ]
 }

@@ -49,3 +49,8 @@ commands.allow = ["sync_open_folder"]
 identifier = "allow-sync-open-file"
 description = "Autorise la commande sync_open_file."
 commands.allow = ["sync_open_file"]
+
+[[permission]]
+identifier = "allow-sync-uploads-status"
+description = "Autorise la commande sync_uploads_status."
+commands.allow = ["sync_uploads_status"]

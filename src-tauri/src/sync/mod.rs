@@ -89,6 +89,23 @@ pub(crate) enum EngineCmd {
     ReconcileNow,
 }
 
+/// One line in the "importing to Drivecord" window.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadItem {
+    pub id: String,
+    pub name: String,
+    pub drive_name: String,
+    pub size: u64,
+    /// "pending" | "encrypting" | "uploading" | "done" | "error"
+    pub state: String,
+    pub progress: f32,
+    pub error: Option<String>,
+}
+
+const UPLOADS_EVENT: &str = "sync://uploads";
+const UPLOADS_WINDOW: &str = "uploads";
+
 /// Shared context threaded through the worker: plain data + channels only, so
 /// it's fine to build on one thread and read from another. Cheap to clone —
 /// every field is either `Copy`-ish small data or an `Arc`/`Client` handle.
@@ -104,6 +121,8 @@ pub(crate) struct EngineCtx {
     /// Local paths currently mid-upload — guards against re-triggering on
     /// overlapping `state_changed` events for the same file.
     pub uploading: Arc<RwLock<HashSet<PathBuf>>>,
+    /// The visible upload queue (drives the "Import Drivecord" window).
+    pub uploads: Arc<RwLock<Vec<UploadItem>>>,
 }
 
 impl EngineCtx {
@@ -123,6 +142,88 @@ impl EngineCtx {
         drop(s);
         self.touch_status();
     }
+
+    // ── Upload queue + "Import Drivecord" window ────────────────────────────
+
+    fn emit_uploads(&self) {
+        let snapshot = self.uploads.read().clone();
+        let _ = self.app.emit(UPLOADS_EVENT, snapshot);
+    }
+
+    /// Add a queued item and pop the window open.
+    pub fn upload_add(&self, item: UploadItem) {
+        self.uploads.write().push(item);
+        self.emit_uploads();
+        open_uploads_window(&self.app);
+    }
+
+    /// Patch an item by id (`f` mutates it), then re-emit.
+    pub fn upload_update(&self, id: &str, f: impl FnOnce(&mut UploadItem)) {
+        {
+            let mut q = self.uploads.write();
+            if let Some(it) = q.iter_mut().find(|i| i.id == id) {
+                f(it);
+            }
+        }
+        self.emit_uploads();
+        self.maybe_close_uploads_window();
+    }
+
+    /// Close the window a few seconds after everything settled with no errors.
+    fn maybe_close_uploads_window(&self) {
+        let q = self.uploads.read();
+        let any_active = q.iter().any(|i| i.state != "done" && i.state != "error");
+        let any_error = q.iter().any(|i| i.state == "error");
+        let empty = q.is_empty();
+        drop(q);
+        if empty || (!any_active && !any_error) {
+            let app = self.app.clone();
+            let uploads = self.uploads.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                let still_done = {
+                    let q = uploads.read();
+                    q.is_empty()
+                        || q.iter().all(|i| i.state == "done")
+                };
+                if still_done {
+                    uploads.write().clear();
+                    let _ = app.emit(UPLOADS_EVENT, Vec::<UploadItem>::new());
+                    close_uploads_window(&app);
+                }
+            });
+        }
+    }
+}
+
+fn open_uploads_window(app: &AppHandle) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        if app.get_webview_window(UPLOADS_WINDOW).is_some() {
+            return;
+        }
+        let _ = tauri::WebviewWindowBuilder::new(
+            &app,
+            UPLOADS_WINDOW,
+            tauri::WebviewUrl::App("desktop-uploads.html".into()),
+        )
+        .title("Import Drivecord")
+        .inner_size(400.0, 460.0)
+        .min_inner_size(340.0, 240.0)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(false)
+        .build();
+    });
+}
+
+fn close_uploads_window(app: &AppHandle) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        if let Some(w) = app.get_webview_window(UPLOADS_WINDOW) {
+            let _ = w.close();
+        }
+    });
 }
 
 pub struct SyncEngine {
@@ -133,6 +234,8 @@ pub struct SyncEngine {
     /// Shared with the worker's `EngineCtx` so the UI can resolve a file's
     /// on-disk path (e.g. "open this heavy video in the synced folder").
     index: Arc<RwLock<FileIndex>>,
+    /// Shared upload queue — read by the `sync_uploads_status` command.
+    uploads: Arc<RwLock<Vec<UploadItem>>>,
     cmd_tx: Arc<RwLock<Option<tokio::sync::mpsc::Sender<EngineCmd>>>>,
     worker: RwLock<Option<std::thread::JoinHandle<()>>>,
 }
@@ -156,6 +259,7 @@ impl SyncEngine {
             })),
             config: RwLock::new(config),
             index: Arc::new(RwLock::new(FileIndex::default())),
+            uploads: Arc::new(RwLock::new(Vec::new())),
             cmd_tx: Arc::new(RwLock::new(None)),
             worker: RwLock::new(None),
         });
@@ -167,6 +271,10 @@ impl SyncEngine {
 
     pub fn status(&self) -> SyncStatus {
         self.status.read().clone()
+    }
+
+    pub fn uploads_status(&self) -> Vec<UploadItem> {
+        self.uploads.read().clone()
     }
 
     /// Local path of a synced file, if the mirror has placed it yet.
@@ -262,6 +370,7 @@ impl SyncEngine {
             },
             status: self.status.clone(),
             uploading: Arc::new(RwLock::new(HashSet::new())),
+            uploads: self.uploads.clone(),
         };
         let cmd_tx_slot = self.cmd_tx.clone();
         let app_for_end = self.app.clone();

@@ -30,14 +30,16 @@ fn guess_mime(filename: &str) -> String {
 }
 
 /// Encrypt + upload `abs_path` as a new file `filename` under `parent_id`,
-/// then collapse it into an in-sync placeholder.
-pub async fn upload_new_file(
+/// then collapse it into an in-sync placeholder. `on_progress(frac)` is called
+/// with 0.0..1.0 as chunks go up.
+pub async fn upload_new_file<F: Fn(f32)>(
     ctx: &EngineCtx,
     drive_id: &str,
     secrets: &DriveSecrets,
     parent_id: &str,
     abs_path: &Path,
     filename: &str,
+    on_progress: F,
 ) -> Result<String, String> {
     let bytes = tokio::fs::read(abs_path).await.map_err(|e| e.to_string())?;
     let mime_type = guess_mime(filename);
@@ -45,7 +47,8 @@ pub async fn upload_new_file(
     let (enc_iv, ciphertext) = crypto::encrypt(&secrets.enc_key, &bytes)?;
 
     let plan = discord::plan_chunks(ciphertext.len() as u64);
-    let mut chunks = Vec::with_capacity(plan.len().max(1));
+    let total = plan.len().max(1);
+    let mut chunks = Vec::with_capacity(total);
     for (index, start, end) in &plan {
         let part_name = if plan.len() > 1 {
             format!("{filename}.part{index}")
@@ -61,6 +64,7 @@ pub async fn upload_new_file(
         .await?;
         chunk.index = *index;
         chunks.push(chunk);
+        on_progress((chunks.len() as f32 / total as f32) * 0.97);
     }
 
     let id = nanoid::nanoid!(12);

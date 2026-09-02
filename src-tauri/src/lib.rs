@@ -153,6 +153,11 @@ fn sync_open_folder(state: tauri::State<'_, Arc<sync::SyncEngine>>) -> Result<()
 }
 
 #[tauri::command(async)]
+fn sync_uploads_status(state: tauri::State<'_, Arc<sync::SyncEngine>>) -> Vec<sync::UploadItem> {
+    state.uploads_status()
+}
+
+#[tauri::command(async)]
 fn sync_open_file(
     state: tauri::State<'_, Arc<sync::SyncEngine>>,
     drive_id: String,
@@ -228,6 +233,7 @@ pub fn run() {
                         sync_set_drive_enabled,
                         sync_open_folder,
                         sync_open_file,
+                        sync_uploads_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

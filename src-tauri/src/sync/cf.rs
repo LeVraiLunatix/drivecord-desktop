@@ -392,11 +392,43 @@ async fn try_upload_settled(
         .unwrap_or("fichier")
         .to_string();
 
-    match upload::upload_new_file(&ctx, &drive_id, &secrets, &folder_id, &path, &filename).await {
+    let item_id = nanoid::nanoid!(8);
+    ctx.upload_add(super::UploadItem {
+        id: item_id.clone(),
+        name: filename.clone(),
+        drive_name: secrets.name.clone(),
+        size: last_size.unwrap_or(0),
+        state: "encrypting".into(),
+        progress: 0.0,
+        error: None,
+    });
+
+    let progress_ctx = ctx.clone();
+    let progress_id = item_id.clone();
+    let on_progress = move |frac: f32| {
+        progress_ctx.upload_update(&progress_id, |it| {
+            it.state = "uploading".into();
+            it.progress = frac.clamp(0.0, 1.0);
+        });
+    };
+
+    match upload::upload_new_file(&ctx, &drive_id, &secrets, &folder_id, &path, &filename, on_progress)
+        .await
+    {
         Ok(file_id) => {
             ctx.index.write().path_to_file.insert(path.clone(), (drive_id, file_id));
+            ctx.upload_update(&item_id, |it| {
+                it.state = "done".into();
+                it.progress = 1.0;
+            });
         }
-        Err(e) => eprintln!("sync: échec de l'envoi de {path:?} : {e}"),
+        Err(e) => {
+            eprintln!("sync: échec de l'envoi de {path:?} : {e}");
+            ctx.upload_update(&item_id, |it| {
+                it.state = "error".into();
+                it.error = Some(e);
+            });
+        }
     }
 
     ctx.uploading.write().remove(&path);
