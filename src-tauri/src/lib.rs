@@ -78,6 +78,20 @@ fn win_start_drag<R: Runtime>(window: WebviewWindow<R>) {
     let _ = window.start_dragging();
 }
 
+/// Minimise the app to the tray (folder sync keeps running).
+#[tauri::command]
+fn app_hide<R: Runtime>(app: tauri::AppHandle<R>) {
+    if let Some(w) = main_window(&app) {
+        let _ = w.hide();
+    }
+}
+
+/// Quit the whole app.
+#[tauri::command]
+fn app_quit<R: Runtime>(app: tauri::AppHandle<R>) {
+    app.exit(0);
+}
+
 fn focus_main<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(w) = main_window(app) {
         let _ = w.show();
@@ -197,32 +211,19 @@ pub fn run() {
 
             tray::create_tray(app.handle())?;
 
-            // Closing the main window asks "quit or minimise to tray" — keeping
-            // it in the tray lets the folder sync (imports/exports) keep running.
+            // Closing the main window pops an in-app modal ("Réduire" keeps the
+            // folder sync running from the tray). We just veto the close and let
+            // the shell decide via a DOM event → `app_hide` / `app_quit`.
             if let Some(main) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
                 main.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
-                        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-                        let h = handle.clone();
-                        handle
-                            .dialog()
-                            .message(
-                                "Réduire dans la zone de notification garde la synchro du dossier active (imports / exports continuent sans la fenêtre).",
-                            )
-                            .title("Fermer Drivecord")
-                            .buttons(MessageDialogButtons::OkCancelCustom(
-                                "Quitter complètement".into(),
-                                "Réduire".into(),
-                            ))
-                            .show(move |quit| {
-                                if quit {
-                                    h.exit(0);
-                                } else if let Some(w) = h.get_webview_window("main") {
-                                    let _ = w.hide();
-                                }
-                            });
+                        if let Some(w) = handle.get_webview_window("main") {
+                            let _ = w.eval(
+                                "window.dispatchEvent(new CustomEvent('drivecord:close-request'))",
+                            );
+                        }
                     }
                 });
             }
@@ -248,6 +249,8 @@ pub fn run() {
             win_toggle_maximize,
             win_close,
             win_start_drag,
+            app_hide,
+            app_quit,
                         sync_status,
                         sync_pick_folder,
                         sync_set_root,

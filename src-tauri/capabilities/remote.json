@@ -19,6 +19,8 @@
     "allow-win-toggle-maximize",
     "allow-win-close",
     "allow-win-start-drag",
+    "allow-app-hide",
+    "allow-app-quit",
     "core:window:allow-start-dragging",
     "allow-sync-status",
     "allow-sync-pick-folder",

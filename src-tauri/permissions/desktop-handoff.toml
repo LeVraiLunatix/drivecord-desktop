@@ -43,3 +43,13 @@ commands.allow = ["win_close"]
 identifier = "allow-win-start-drag"
 description = "Autorise la commande win_start_drag."
 commands.allow = ["win_start_drag"]
+
+[[permission]]
+identifier = "allow-app-hide"
+description = "Autorise la commande app_hide."
+commands.allow = ["app_hide"]
+
+[[permission]]
+identifier = "allow-app-quit"
+description = "Autorise la commande app_quit."
+commands.allow = ["app_quit"]
