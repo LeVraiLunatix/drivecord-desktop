@@ -197,6 +197,36 @@ pub fn run() {
 
             tray::create_tray(app.handle())?;
 
+            // Closing the main window asks "quit or minimise to tray" — keeping
+            // it in the tray lets the folder sync (imports/exports) keep running.
+            if let Some(main) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                main.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+                        let h = handle.clone();
+                        handle
+                            .dialog()
+                            .message(
+                                "Réduire dans la zone de notification garde la synchro du dossier active (imports / exports continuent sans la fenêtre).",
+                            )
+                            .title("Fermer Drivecord")
+                            .buttons(MessageDialogButtons::OkCancelCustom(
+                                "Quitter complètement".into(),
+                                "Réduire".into(),
+                            ))
+                            .show(move |quit| {
+                                if quit {
+                                    h.exit(0);
+                                } else if let Some(w) = h.get_webview_window("main") {
+                                    let _ = w.hide();
+                                }
+                            });
+                    }
+                });
+            }
+
             // No token yet → send the window to first-party login. With a token,
             // the window keeps its default content (the embedded shell).
             if token::read().is_none() {
