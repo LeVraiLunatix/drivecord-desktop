@@ -7,6 +7,7 @@ use tauri::{
 };
 
 use crate::sync::{SyncEngine, SyncStatus};
+use crate::update::{UpdateEngine, UpdateStatus};
 
 fn state_label(status: &SyncStatus) -> String {
     if !status.enabled {
@@ -27,9 +28,13 @@ fn state_label(status: &SyncStatus) -> String {
     }
 }
 
-/// Rebuild the whole tray menu from the current sync status (drive list can
-/// change, so a static menu won't do).
-fn build_menu<R: Runtime>(app: &AppHandle<R>, status: &SyncStatus) -> tauri::Result<Menu<R>> {
+/// Rebuild the whole tray menu from the current sync + update status (drive
+/// list and update availability can both change, so a static menu won't do).
+fn build_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    status: &SyncStatus,
+    update: &UpdateStatus,
+) -> tauri::Result<Menu<R>> {
     let open = MenuItem::with_id(app, "open", "Ouvrir Drivecord", true, None::<&str>)?;
     let folder = MenuItem::with_id(app, "folder", "Ouvrir le dossier dans Windows", true, None::<&str>)?;
     let pause = MenuItem::with_id(
@@ -47,6 +52,17 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, status: &SyncStatus) -> tauri::Res
     let quit = MenuItem::with_id(app, "quit", "Quitter Drivecord", true, None::<&str>)?;
 
     let menu = Menu::new(app)?;
+
+    if update.state == "ready" {
+        let label = match &update.version {
+            Some(v) => format!("Installer la mise à jour (v{v})"),
+            None => "Installer la mise à jour".into(),
+        };
+        let install = MenuItem::with_id(app, "install_update", label, true, None::<&str>)?;
+        menu.append(&install)?;
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+
     menu.append(&open)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
 
@@ -82,7 +98,11 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .try_state::<Arc<SyncEngine>>()
         .map(|e| e.status())
         .unwrap_or_default();
-    let menu = build_menu(app, &status0)?;
+    let update0 = app
+        .try_state::<Arc<UpdateEngine>>()
+        .map(|e| e.status())
+        .unwrap_or_default();
+    let menu = build_menu(app, &status0, &update0)?;
 
     let tray = TrayIconBuilder::with_id("main")
         .tooltip("Drivecord")
@@ -108,6 +128,14 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                     }
                 }
                 "folder" => open_sync_folder(app),
+                "install_update" => {
+                    if let Some(engine) = app.try_state::<Arc<UpdateEngine>>() {
+                        let engine = engine.inner().clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = engine.install_now().await;
+                        });
+                    }
+                }
                 _ if id.starts_with("drive:") => open_drive(app, &id["drive:".len()..]),
                 _ => {}
             }
@@ -124,15 +152,43 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         })
         .build(app)?;
 
-    // Rebuild the menu whenever sync status changes (drive list, pause state…).
-    let app_l = app.clone();
-    let tray_l: TrayIcon<R> = tray.clone();
-    app.listen("sync://status", move |event| {
-        let Ok(s) = serde_json::from_str::<SyncStatus>(event.payload()) else { return };
-        if let Ok(menu) = build_menu(&app_l, &s) {
-            let _ = tray_l.set_menu(Some(menu));
-        }
-    });
+    // Rebuild the menu whenever sync or update status changes (drive list,
+    // pause state, an update becoming ready…). Each event only carries one
+    // half of the picture, so we keep the latest of both around.
+    let last = std::sync::Arc::new(parking_lot::Mutex::new((status0, update0)));
+
+    {
+        let app_l = app.clone();
+        let tray_l: TrayIcon<R> = tray.clone();
+        let last = last.clone();
+        app.listen("sync://status", move |event| {
+            let Ok(s) = serde_json::from_str::<SyncStatus>(event.payload()) else { return };
+            let update = {
+                let mut l = last.lock();
+                l.0 = s;
+                l.1.clone()
+            };
+            if let Ok(menu) = build_menu(&app_l, &last.lock().0, &update) {
+                let _ = tray_l.set_menu(Some(menu));
+            }
+        });
+    }
+    {
+        let app_l = app.clone();
+        let tray_l: TrayIcon<R> = tray.clone();
+        let last = last.clone();
+        app.listen("update://status", move |event| {
+            let Ok(u) = serde_json::from_str::<UpdateStatus>(event.payload()) else { return };
+            let sync = {
+                let mut l = last.lock();
+                l.1 = u;
+                l.0.clone()
+            };
+            if let Ok(menu) = build_menu(&app_l, &sync, &last.lock().1) {
+                let _ = tray_l.set_menu(Some(menu));
+            }
+        });
+    }
 
     Ok(())
 }

@@ -1,0 +1,16 @@
+"$schema" = "schemas/schema.json"
+
+# ACL permissions for the auto-update commands (see src/update.rs). Tauri 2
+# does not auto-generate permissions for app commands — every command invoked
+# from the embedded shell must be listed here and referenced from
+# capabilities/default.json + capabilities/remote.json.
+
+[[permission]]
+identifier = "allow-update-status"
+description = "Autorise la commande update_status."
+commands.allow = ["update_status"]
+
+[[permission]]
+identifier = "allow-install-update"
+description = "Autorise la commande install_update."
+commands.allow = ["install_update"]

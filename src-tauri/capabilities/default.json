@@ -25,6 +25,8 @@
     "allow-win-start-drag",
     "allow-app-hide",
     "allow-app-quit",
+    "allow-update-status",
+    "allow-install-update",
     "allow-sync-status",
     "allow-sync-pick-folder",
     "allow-sync-set-root",

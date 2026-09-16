@@ -2,6 +2,7 @@
 mod sync;
 mod token;
 mod tray;
+mod update;
 
 use std::sync::Arc;
 
@@ -182,6 +183,18 @@ fn sync_open_file(
     Ok(())
 }
 
+// ── Auto-update ───────────────────────────────────────────────────────────────
+
+#[tauri::command(async)]
+fn update_status(state: tauri::State<'_, Arc<update::UpdateEngine>>) -> update::UpdateStatus {
+    state.status()
+}
+
+#[tauri::command(async)]
+async fn install_update(state: tauri::State<'_, Arc<update::UpdateEngine>>) -> Result<(), String> {
+    state.install_now().await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -202,12 +215,17 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             #[cfg(windows)]
             {
                 let engine = sync::SyncEngine::init(app.handle());
                 app.manage(engine);
             }
+
+            let update_engine = update::UpdateEngine::init(app.handle());
+            app.manage(update_engine);
 
             tray::create_tray(app.handle())?;
 
@@ -261,6 +279,8 @@ pub fn run() {
                         sync_open_folder,
                         sync_open_file,
                         sync_uploads_status,
+                        update_status,
+                        install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

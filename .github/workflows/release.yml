@@ -33,13 +33,17 @@ jobs:
         with:
           workspaces: "src-tauri -> target"
 
-      - name: Build + draft release (NSIS installer)
+      - name: Build + publish release (NSIS installer, signed for auto-update)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCLOUD_DIR: discloud-src
+          # Signs the NSIS updater bundle + generates latest.json (the
+          # updater's endpoint manifest) — see tauri.conf.json plugins.updater.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0-dev' }}
           releaseName: "Drivecord Desktop ${{ github.ref_name }}"
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
