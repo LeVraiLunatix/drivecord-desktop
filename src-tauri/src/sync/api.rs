@@ -13,6 +13,39 @@ const BASE: &str = "https://drivecord.app";
 
 pub type Result<T> = std::result::Result<T, String>;
 
+// Same shape as `discord::with_retry` (exponential backoff, same base/steps),
+// just with fewer attempts — these are short JSON round-trips to our own API,
+// not big chunk transfers, so we don't want to hang around for minutes.
+const RETRY_MAX_ATTEMPTS: u32 = 3;
+const RETRY_BASE_DELAY_MS: u64 = 500;
+const RETRY_MAX_DELAY_MS: u64 = 5_000;
+
+/// Retries a fallible request a few times with exponential backoff — used by
+/// every mutating call (`create_file`, `patch_file`) so a transient network
+/// blip (the case that matters most: `delete`/`rename` fired from a Cloud
+/// Filter callback, where the caller only fires-and-forgets the future)
+/// doesn't turn into a silent, permanent divergence between disk and cloud.
+async fn with_retry<T, F, Fut>(what: &str, mut f: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut attempt = 0u32;
+    loop {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                attempt += 1;
+                if attempt >= RETRY_MAX_ATTEMPTS {
+                    return Err(format!("{what}: abandon après {attempt} essais — {e}"));
+                }
+                let delay = (RETRY_BASE_DELAY_MS << attempt.min(4)).min(RETRY_MAX_DELAY_MS);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Webhook {
     #[serde(rename = "driveId")]
@@ -172,29 +205,35 @@ impl Api {
             chunks,
             enc_iv,
         };
-        let res = self
-            .req(reqwest::Method::POST, &format!("/api/drive/{drive_id}/files"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        Self::json(res).await
+        with_retry("create_file", || async {
+            let res = self
+                .req(reqwest::Method::POST, &format!("/api/drive/{drive_id}/files"))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            Self::json(res).await
+        })
+        .await
     }
 
     pub async fn patch_file(&self, drive_id: &str, id: &str, body: &PatchFileBody) -> Result<()> {
-        let res = self
-            .req(
-                reqwest::Method::PATCH,
-                &format!("/api/drive/{drive_id}/files/{id}"),
-            )
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("HTTP {}", res.status()));
-        }
-        Ok(())
+        with_retry("patch_file", || async {
+            let res = self
+                .req(
+                    reqwest::Method::PATCH,
+                    &format!("/api/drive/{drive_id}/files/{id}"),
+                )
+                .json(body)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !res.status().is_success() {
+                return Err(format!("HTTP {}", res.status()));
+            }
+            Ok(())
+        })
+        .await
     }
 
     #[allow(dead_code)]

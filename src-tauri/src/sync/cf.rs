@@ -57,8 +57,10 @@ async fn async_main(ctx: EngineCtx, cmd_rx: &mut tokio::sync::mpsc::Receiver<Eng
 
     mirror::reconcile_all(&ctx).await;
 
-    // Disk -> cloud: watch the root for files the user drops in.
-    let (watch_tx, mut watch_rx) = tokio::sync::mpsc::unbounded_channel::<std::path::PathBuf>();
+    // Disk -> cloud: watch the root for files the user drops in. Bounded (see
+    // `watcher::channel`) so a huge burst applies backpressure instead of
+    // growing memory use without limit.
+    let (watch_tx, mut watch_rx) = super::watcher::channel();
     let _watcher = match super::watcher::spawn(&root, watch_tx) {
         Ok(w) => Some(w),
         Err(e) => {
@@ -249,11 +251,31 @@ impl Filter for DriveFilter {
             // local delete but leave the cloud side untouched.
             if !info.is_directory() {
                 if let Some((drive_id, file_id)) = parse_blob(request.file_blob()) {
+                    // Best-effort human label for the log/status message —
+                    // the local index may already have moved on by the time
+                    // this fires, so fall back to the raw id.
+                    let label = ctx
+                        .index
+                        .read()
+                        .files
+                        .get(&file_id)
+                        .map(|(_, e)| e.filename.clone())
+                        .unwrap_or_else(|| file_id.clone());
                     tokio::spawn(async move {
                         let body = api::PatchFileBody { trashed: Some(true), ..Default::default() };
-                        let _ = api::Api::new(ctx.http.clone(), ctx.token.clone())
+                        // `patch_file` already retries transient failures a few
+                        // times; if it still fails, the local delete already
+                        // went through (ticket.pass() below), so surface it
+                        // clearly instead of leaving a ghost on the cloud side.
+                        if let Err(e) = api::Api::new(ctx.http.clone(), ctx.token.clone())
                             .patch_file(&drive_id, &file_id, &body)
-                            .await;
+                            .await
+                        {
+                            eprintln!(
+                                "sync: suppression cloud échouée pour {label:?} (drive {drive_id}, fichier {file_id}) : {e}"
+                            );
+                            ctx.set_error(format!("Suppression cloud échouée pour {label:?} : {e}"));
+                        }
                     });
                 }
             }
@@ -290,9 +312,35 @@ impl Filter for DriveFilter {
                     parent_id: new_parent_id,
                     ..Default::default()
                 };
-                let _ = api::Api::new(ctx.http.clone(), ctx.token.clone())
+                match api::Api::new(ctx.http.clone(), ctx.token.clone())
                     .patch_file(&drive_id, &file_id, &body)
-                    .await;
+                    .await
+                {
+                    Ok(()) => {
+                        // Reflect the move in `path_to_file` right away instead
+                        // of waiting for the next `reconcile_all` (up to
+                        // RECONCILE_INTERVAL_SECS later) — a delete/rename
+                        // fired against the stale `dest` path in between would
+                        // otherwise miss the file entirely.
+                        let mut idx = ctx.index.write();
+                        idx.path_to_file.retain(|_, (_, fid)| fid != &file_id);
+                        idx.path_to_file.insert(dest.clone(), (drive_id.clone(), file_id.clone()));
+                    }
+                    Err(e) => {
+                        // `patch_file` already retried a few times — the local
+                        // rename already happened (ticket.pass() above), so the
+                        // filesystem and the cloud tree are now out of sync
+                        // until the next reconcile. Surface it instead of
+                        // pretending the rename fully succeeded.
+                        eprintln!(
+                            "sync: renommage cloud échoué pour {dest:?} (drive {drive_id}, fichier {file_id}) : {e}"
+                        );
+                        ctx.set_error(format!(
+                            "Renommage non propagé au cloud pour {} : {e}",
+                            dest.display()
+                        ));
+                    }
+                }
             });
             Ok(())
         }

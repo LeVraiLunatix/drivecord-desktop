@@ -1,38 +1,17 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "desktop-login-handoff",
-  "description": "La page de login first-party sur drivecord.app (chargée dans la fenêtre pendant la connexion) peut remettre le token et basculer sur le shell.",
+  "description": "La page de login first-party sur drivecord.app (chargée dans la fenêtre pendant la connexion) peut remettre le token et basculer sur le shell. Portée volontairement réduite au strict flux de login : voir le commentaire ci-dessous sur le scoping par chemin et la liste de permissions minimale.",
   "windows": [
     "main"
   ],
   "remote": {
     "urls": [
-      "https://drivecord.app"
+      "https://drivecord.app/desktop-welcome*"
     ]
   },
   "permissions": [
     "allow-save-token",
-    "allow-get-token",
-    "allow-enter-shell",
-    "allow-enter-auth",
-    "allow-win-minimize",
-    "allow-win-toggle-maximize",
-    "allow-win-close",
-    "allow-win-start-drag",
-    "allow-app-hide",
-    "allow-app-quit",
-    "allow-update-status",
-    "allow-install-update",
-    "core:window:allow-start-dragging",
-    "allow-sync-status",
-    "allow-sync-pick-folder",
-    "allow-sync-set-root",
-    "allow-sync-enable",
-    "allow-sync-disable",
-    "allow-sync-now",
-    "allow-sync-set-drive-enabled",
-    "allow-sync-open-folder",
-    "allow-sync-open-file",
-    "allow-sync-uploads-status"
+    "allow-enter-shell"
   ]
 }

@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' https://drivecord.app; img-src 'self' asset: https://asset.localhost data: https://drivecord.app https://cdn.discordapp.com; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src 'none'; object-src 'none'"
     }
   },
   "bundle": {

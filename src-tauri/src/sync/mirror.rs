@@ -35,6 +35,47 @@ fn filetime_from_unix_ms(ms: i64) -> Option<FileTime> {
     FileTime::from_unix_time(ms / 1000).ok()
 }
 
+/// Reserve `sanitized` for `id` inside one local directory's namespace
+/// (`used`, keyed lower-case since Windows path segments are case-insensitive
+/// and shared between folders and files in the same parent).
+///
+/// Two different cloud ids that sanitize to the same local name would
+/// otherwise map to the exact same `abs` path — the second `if !abs.exists()`
+/// check in `reconcile_drive`/`ensure_dir_placeholder` would then see the
+/// first one's placeholder already there, skip creating anything, and
+/// silently overwrite that first id's `index` entry with the second one's,
+/// making the first file/folder unreachable. Detect the collision here and
+/// suffix the second (and any further) name instead, so both stay visible.
+fn dedupe_name(used: &mut HashMap<String, String>, sanitized: &str, id: &str) -> String {
+    let key = sanitized.to_lowercase();
+    match used.get(&key) {
+        None => {
+            used.insert(key, id.to_string());
+            sanitized.to_string()
+        }
+        Some(existing_id) if existing_id == id => sanitized.to_string(),
+        Some(_) => {
+            let (stem, ext) = match sanitized.rsplit_once('.') {
+                Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+                _ => (sanitized, String::new()),
+            };
+            let mut n = 2;
+            loop {
+                let candidate = format!("{stem} ({n}){ext}");
+                let ck = candidate.to_lowercase();
+                if !used.contains_key(&ck) {
+                    eprintln!(
+                        "sync: collision de nom après sanitization — {sanitized:?} (id {id}) renommé en {candidate:?} pour rester visible"
+                    );
+                    used.insert(ck, id.to_string());
+                    return candidate;
+                }
+                n += 1;
+            }
+        }
+    }
+}
+
 pub async fn reconcile_all(ctx: &EngineCtx) {
     let cfg = ctx.config();
     let token = &ctx.token;
@@ -55,6 +96,7 @@ pub async fn reconcile_all(ctx: &EngineCtx) {
 
     let mut drive_statuses = Vec::new();
     let mut new_index = FileIndex::default();
+    let mut collisions: Vec<String> = Vec::new();
 
     let icon = ctx
         .config_path
@@ -83,7 +125,10 @@ pub async fn reconcile_all(ctx: &EngineCtx) {
         );
         let file_count = if enabled {
             match reconcile_drive(ctx, &api, &wh.drive_id, &wh.name, icon.as_deref(), &mut new_index).await {
-                Ok(n) => n,
+                Ok((n, mut drive_collisions)) => {
+                    collisions.append(&mut drive_collisions);
+                    n
+                }
                 Err(e) => {
                     eprintln!("sync: drive {} : {e}", wh.drive_id);
                     0
@@ -104,8 +149,20 @@ pub async fn reconcile_all(ctx: &EngineCtx) {
 
     let mut s = ctx.status.write();
     s.drives = drive_statuses;
-    s.state = "synced".into();
-    s.last_error = None;
+    if collisions.is_empty() {
+        s.state = "synced".into();
+        s.last_error = None;
+    } else {
+        // Not fatal (the rest of the tree still reconciled fine), but the
+        // user needs to know some names were disambiguated on disk instead
+        // of silently shadowing an earlier cloud entry.
+        s.state = "synced".into();
+        s.last_error = Some(format!(
+            "{} collision(s) de nom résolue(s) en renommant les doublons : {}",
+            collisions.len(),
+            collisions.join("; ")
+        ));
+    }
     s.last_sync_at = Some(now_ms());
     drop(s);
     ctx.touch_status();
@@ -145,7 +202,14 @@ async fn reconcile_drive(
     drive_name: &str,
     icon: Option<&std::path::Path>,
     index: &mut FileIndex,
-) -> Result<u32, String> {
+) -> Result<(u32, Vec<String>), String> {
+    // Names actually reserved on disk this pass, per parent directory —
+    // shared between folders and files since they occupy the same Windows
+    // directory namespace. Lets us catch two different cloud ids sanitizing
+    // to the same local name before either one clobbers the other's mapping.
+    let mut used_names: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
+    let mut collisions: Vec<String> = Vec::new();
+
     let drive_root = ensure_dir_placeholder(&ctx.root, &sanitize(drive_name), icon);
     index
         .path_to_folder
@@ -165,7 +229,16 @@ async fn reconcile_drive(
             let Some(parent_abs) = resolved.get(&f.parent_id).cloned() else {
                 return true;
             };
-            let abs = ensure_dir_placeholder(&parent_abs, &sanitize(&f.name), icon);
+            let sanitized = sanitize(&f.name);
+            let dir_used = used_names.entry(parent_abs.clone()).or_default();
+            let name = dedupe_name(dir_used, &sanitized, &f.id);
+            if name != sanitized {
+                collisions.push(format!(
+                    "{drive_name}: dossier {sanitized:?} -> {name:?} (id {})",
+                    f.id
+                ));
+            }
+            let abs = ensure_dir_placeholder(&parent_abs, &name, icon);
             index
                 .path_to_folder
                 .insert(abs.clone(), (drive_id.to_string(), f.id.clone()));
@@ -183,7 +256,15 @@ async fn reconcile_drive(
         let Some(parent_abs) = resolved.get(&file.parent_id) else {
             continue; // orphaned (parent folder missing/trashed) — skip this pass
         };
-        let name = sanitize(&file.filename);
+        let sanitized = sanitize(&file.filename);
+        let dir_used = used_names.entry(parent_abs.clone()).or_default();
+        let name = dedupe_name(dir_used, &sanitized, &file.id);
+        if name != sanitized {
+            collisions.push(format!(
+                "{drive_name}: fichier {sanitized:?} -> {name:?} (id {})",
+                file.id
+            ));
+        }
         let abs = parent_abs.join(&name);
 
         if !abs.exists() {
@@ -214,7 +295,7 @@ async fn reconcile_drive(
         count += 1;
     }
 
-    Ok(count)
+    Ok((count, collisions))
 }
 
 fn now_ms() -> i64 {
