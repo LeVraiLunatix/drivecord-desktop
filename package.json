@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Client desktop Windows pour Drivecord (drivecord.app)",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "shell": "node scripts/build-shell.mjs",
     "installer:art": "node scripts/gen-installer-art.mjs",
