@@ -10,11 +10,16 @@ use std::{future::Future, path::Path, time::Duration};
 use cloud_filter::{
     error::{CResult, CloudErrorKind},
     filter::{info, ticket, Filter, Request},
-    root::{HydrationType, PopulationType, SecurityId, Session, SyncRootId, SyncRootIdBuilder, SyncRootInfo},
+    root::{
+        HydrationType, PopulationType, SecurityId, Session, SyncRootId, SyncRootIdBuilder,
+        SyncRootInfo,
+    },
     utility::WriteAt,
 };
 
-use super::{api, crypto, discord, mirror, upload, EngineCmd, EngineCtx, RECONCILE_INTERVAL_SECS};
+use super::{
+    api, crypto, discord, e2ee, mirror, upload, EngineCmd, EngineCtx, RECONCILE_INTERVAL_SECS,
+};
 
 pub(crate) fn run_worker(ctx: EngineCtx, mut cmd_rx: tokio::sync::mpsc::Receiver<EngineCmd>) {
     let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -47,13 +52,14 @@ async fn async_main(ctx: EngineCtx, cmd_rx: &mut tokio::sync::mpsc::Receiver<Eng
 
     let handle = tokio::runtime::Handle::current();
     let filter = DriveFilter(ctx.clone());
-    let connection = match Session::new().connect_async(&root, filter, move |fut| handle.block_on(fut)) {
-        Ok(c) => c,
-        Err(e) => {
-            ctx.set_error(format!("connexion à l'API Cloud Files : {e}"));
-            return;
-        }
-    };
+    let connection =
+        match Session::new().connect_async(&root, filter, move |fut| handle.block_on(fut)) {
+            Ok(c) => c,
+            Err(e) => {
+                ctx.set_error(format!("connexion à l'API Cloud Files : {e}"));
+                return;
+            }
+        };
 
     mirror::reconcile_all(&ctx).await;
 
@@ -110,7 +116,11 @@ fn ensure_registered(root: &Path, icon_path: Option<&Path>) -> Result<SyncRootId
     // brand folder icon; fall back to the app exe, then a generic shell icon.
     let icon = icon_path
         .map(|p| format!("{},0", p.display()))
-        .or_else(|| std::env::current_exe().ok().map(|p| format!("{},0", p.display())))
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .map(|p| format!("{},0", p.display()))
+        })
         .unwrap_or_else(|| "%SystemRoot%\\system32\\imageres.dll,-1043".to_string());
 
     let info = SyncRootInfo::default()
@@ -139,6 +149,52 @@ fn ensure_registered(root: &Path, icon_path: Option<&Path>) -> Result<SyncRootId
 struct DriveFilter(EngineCtx);
 
 /// A file placeholder's identity blob: `driveId\0fileId` (UTF-8). Kept tiny —
+/// Turn a downloaded file (its chunks concatenated in order) back into
+/// plaintext: v1 = per-chunk AES-GCM with the file key; legacy = one AES-GCM
+/// blob under the drive's server-held key; otherwise plain bytes.
+fn decrypt_content(
+    secrets: &super::DriveSecrets,
+    entry: &api::FileEntry,
+    ciphertext: Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    if entry.is_v1() {
+        let fk = entry.fk.ok_or("clé de fichier non résolue")?;
+        let prefix = e2ee::prefix_from_b64(entry.nonce_prefix.as_deref().unwrap_or(""))?;
+        let mut chunks = entry.chunks.clone();
+        chunks.sort_by_key(|c| c.index);
+        let mut out = Vec::with_capacity(entry.logical_size() as usize);
+        let mut offset = 0usize;
+        for (i, c) in chunks.iter().enumerate() {
+            let end = offset + c.size as usize;
+            let part = ciphertext
+                .get(offset..end)
+                .ok_or("taille de chunk incohérente")?;
+            out.extend(e2ee::decrypt_chunk(
+                &fk,
+                &prefix,
+                &entry.id,
+                i as u32,
+                i + 1 == chunks.len(),
+                part,
+            )?);
+            offset = end;
+        }
+        return Ok(out);
+    }
+    // Legacy single-IV file. On a migrated (end-to-end) drive the old raw key
+    // BECAME the drive key, so the DK opens those files too — same as the web
+    // client's `decryptDownloaded`.
+    let legacy = secrets
+        .legacy_key
+        .clone()
+        .or_else(|| secrets.dk.map(|dk| e2ee::b64(&dk)));
+    match (entry.enc_iv.as_deref(), legacy) {
+        (Some(iv), Some(key)) => crypto::decrypt(&key, iv, &ciphertext),
+        (Some(_), None) => Err("clé du drive absente".into()),
+        (None, _) => Ok(ciphertext),
+    }
+}
+
 /// CfAPI caps blobs at 4 KiB — everything else is looked up from the shared
 /// `FileIndex`, refreshed on every reconcile pass.
 fn parse_blob(blob: &[u8]) -> Option<(String, String)> {
@@ -151,6 +207,7 @@ impl Filter for DriveFilter {
     /// Approve "Free up space" (clic droit → Libérer de l'espace) — the file's
     /// data is discarded, it goes back to a 0-byte ghost, and `fetch_data`
     /// re-downloads it on next open.
+    #[allow(clippy::manual_async_fn)] // trait signature: `fn -> impl Future`
     fn dehydrate(
         &self,
         _request: Request,
@@ -186,11 +243,7 @@ impl Filter for DriveFilter {
 
             // Total the OS expects on disk (the decrypted size). Used only to
             // drive the progress bar / keep the 60s callback timer alive.
-            let logical = if entry.enc_iv.is_some() {
-                entry.size.saturating_sub(16)
-            } else {
-                entry.size
-            };
+            let logical = entry.logical_size();
 
             // Download phase counts for ~90% of the progress bar, the disk
             // write for the last ~10%.
@@ -200,19 +253,18 @@ impl Filter for DriveFilter {
                 &entry.chunks,
                 16,
                 |done, total| {
-                    let completed = (logical as u128 * 9 * done as u128
-                        / (10 * total.max(1) as u128)) as u64;
+                    let completed =
+                        (logical as u128 * 9 * done as u128 / (10 * total.max(1) as u128)) as u64;
                     let _ = ticket.report_progress(logical, completed);
                 },
             )
             .await
             .map_err(|_| CloudErrorKind::NetworkUnavailable)?;
 
-            let plain = match entry.enc_iv.as_deref() {
-                Some(iv) => crypto::decrypt(&secrets.enc_key, iv, &ciphertext)
-                    .map_err(|_| CloudErrorKind::ValidationFailed)?,
-                None => ciphertext,
-            };
+            let plain = decrypt_content(&secrets, &entry, ciphertext).map_err(|e| {
+                eprintln!("sync: déchiffrement de {file_id} : {e}");
+                CloudErrorKind::ValidationFailed
+            })?;
 
             // Write in ~8 MiB blocks, pinging progress between each — a single
             // 200 MB CfExecute stalls Explorer and risks the 60s callback
@@ -226,12 +278,14 @@ impl Filter for DriveFilter {
                     .write_at(&plain[offset..end], offset as u64)
                     .map_err(|_| CloudErrorKind::InvalidRequest)?;
                 offset = end;
-                let completed =
-                    (logical as u128 * (9 * total as u128 + offset as u128) / (10 * total.max(1) as u128)) as u64;
+                let completed = (logical as u128 * (9 * total as u128 + offset as u128)
+                    / (10 * total.max(1) as u128)) as u64;
                 let _ = ticket.report_progress(logical, completed.min(logical));
             }
             if total == 0 {
-                ticket.write_at(&[], 0).map_err(|_| CloudErrorKind::InvalidRequest)?;
+                ticket
+                    .write_at(&[], 0)
+                    .map_err(|_| CloudErrorKind::InvalidRequest)?;
             }
             Ok(())
         }
@@ -247,13 +301,25 @@ impl Filter for DriveFilter {
         async move {
             // Folder deletions aren't propagated in this pass — approve the
             // local delete but leave the cloud side untouched.
+            eprintln!(
+                "sync: suppression {:?} (dossier: {})",
+                request.path(),
+                info.is_directory()
+            );
             if !info.is_directory() {
                 if let Some((drive_id, file_id)) = parse_blob(request.file_blob()) {
+                    ctx.index.write().path_to_file.remove(&request.path());
                     tokio::spawn(async move {
-                        let body = api::PatchFileBody { trashed: Some(true), ..Default::default() };
-                        let _ = api::Api::new(ctx.http.clone(), ctx.token.clone())
+                        let body = api::PatchFileBody {
+                            trashed: Some(true),
+                            ..Default::default()
+                        };
+                        if let Err(e) = api::Api::new(ctx.http.clone(), ctx.token.clone())
                             .patch_file(&drive_id, &file_id, &body)
-                            .await;
+                            .await
+                        {
+                            eprintln!("sync: mise à la corbeille de {file_id} : {e}");
+                        }
                     });
                 }
             }
@@ -270,6 +336,14 @@ impl Filter for DriveFilter {
     ) -> impl Future<Output = CResult<()>> {
         let ctx = self.0.clone();
         async move {
+            // Move the index entry to the new path BEFORE approving: the fs
+            // watcher sees the target appear, and must recognise it (else the
+            // renamed file was uploaded a second time).
+            if let Some(ids) = parse_blob(request.file_blob()) {
+                let mut idx = ctx.index.write();
+                idx.path_to_file.remove(&request.path());
+                idx.path_to_file.insert(info.target_path(), ids);
+            }
             ticket.pass().map_err(|_| CloudErrorKind::InvalidRequest)?;
 
             if !info.source_in_scope() || !info.target_in_scope() {
@@ -279,20 +353,58 @@ impl Filter for DriveFilter {
                 return Ok(());
             };
             let dest = info.target_path();
-            let new_name = dest.file_name().and_then(|n| n.to_str()).map(str::to_string);
-            let new_parent_id = dest
-                .parent()
-                .and_then(|p| ctx.index.read().path_to_folder.get(p).map(|(_, id)| id.clone()));
+            let new_name = dest
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string);
+            let new_parent_id = dest.parent().and_then(|p| {
+                ctx.index
+                    .read()
+                    .path_to_folder
+                    .get(p)
+                    .map(|(_, id)| id.clone())
+            });
+
+            let known = ctx.index.read().files.get(&file_id).map(|(_, e)| e.clone());
+            let dk = ctx.index.read().drives.get(&drive_id).and_then(|d| d.dk);
 
             tokio::spawn(async move {
+                let api = api::Api::new(ctx.http.clone(), ctx.token.clone());
+                // A file uploaded from this PC since the last pass isn't in the
+                // index yet — fetch its record to know how its name is stored.
+                let entry = match known {
+                    Some(e) => Some(e),
+                    None => api.get_file(&drive_id, &file_id).await.ok(),
+                };
+                // v1 file: the name lives in the sealed metadata — re-seal it
+                // with the new name (the server refuses a plain `filename`).
+                let v1 = match (&entry, dk) {
+                    (Some(e), Some(dk)) if e.is_v1() => (|| {
+                        let fk =
+                            e2ee::unwrap_file_key(&dk, &file_id, e.fk_wrapped.as_deref()?).ok()?;
+                        let meta = e2ee::open_meta(&fk, &file_id, e.enc_meta.as_deref()?).ok()?;
+                        Some((fk, meta))
+                    })(),
+                    _ => None,
+                };
+                let is_v1 = entry.as_ref().is_some_and(|e| e.is_v1());
+                let (filename, enc_meta) = match (v1, new_name) {
+                    (Some((fk, mut meta)), Some(name)) if meta.name != name => {
+                        meta.name = name;
+                        (None, e2ee::seal_meta(&fk, &file_id, &meta).ok())
+                    }
+                    _ if is_v1 => (None, None),
+                    (_, name) => (name, None),
+                };
                 let body = api::PatchFileBody {
-                    filename: new_name,
+                    filename,
                     parent_id: new_parent_id,
+                    enc_meta,
                     ..Default::default()
                 };
-                let _ = api::Api::new(ctx.http.clone(), ctx.token.clone())
-                    .patch_file(&drive_id, &file_id, &body)
-                    .await;
+                if let Err(e) = api.patch_file(&drive_id, &file_id, &body).await {
+                    eprintln!("sync: renommage de {file_id} : {e}");
+                }
             });
             Ok(())
         }
@@ -309,6 +421,16 @@ impl Filter for DriveFilter {
             }
         }
     }
+}
+
+/// Already one of our placeholders (synced from the cloud, hydrated or not)?
+/// A file or folder the user drops in is a plain one until we convert it, so
+/// this is what tells "came from Drivecord" apart from "new local content".
+fn is_cloud_placeholder(path: &std::path::Path) -> bool {
+    cloud_filter::placeholder::Placeholder::open(path)
+        .ok()
+        .and_then(|p| p.info().ok().flatten())
+        .is_some()
 }
 
 /// Is this path a placeholder stub we (or the OS) created but that has no real
@@ -338,7 +460,7 @@ pub(crate) fn consider_local_path(ctx: &EngineCtx, path: std::path::PathBuf) {
     // A new subfolder dropped under a known drive folder → create it cloud-side,
     // index it, then re-scan what's already been copied into it.
     if path.is_dir() {
-        if ctx.index.read().path_to_folder.contains_key(&path) {
+        if ctx.index.read().path_to_folder.contains_key(&path) || is_cloud_placeholder(&path) {
             return;
         }
         let Some((drive_id, parent_folder_id)) =
@@ -346,14 +468,38 @@ pub(crate) fn consider_local_path(ctx: &EngineCtx, path: std::path::PathBuf) {
         else {
             return;
         };
-        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+        let Some(name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+        else {
             return;
         };
+        let dk = ctx.index.read().drives.get(&drive_id).and_then(|d| d.dk);
         let ctx = ctx.clone();
         tokio::spawn(async move {
             let id = nanoid::nanoid!(12);
+            // E2EE drive: the server only gets the sealed name.
+            let enc_name = match dk {
+                Some(dk) => match e2ee::seal_folder_name(&dk, &id, &name) {
+                    Ok(b) => Some(b),
+                    Err(_) => return,
+                },
+                None => None,
+            };
+            let plain_name = if enc_name.is_some() {
+                ""
+            } else {
+                name.as_str()
+            };
             if api::Api::new(ctx.http.clone(), ctx.token.clone())
-                .create_folder(&drive_id, &id, &parent_folder_id, &name)
+                .create_folder(
+                    &drive_id,
+                    &id,
+                    &parent_folder_id,
+                    plain_name,
+                    enc_name.as_deref(),
+                )
                 .await
                 .is_ok()
             {
@@ -374,7 +520,7 @@ pub(crate) fn consider_local_path(ctx: &EngineCtx, path: std::path::PathBuf) {
     if ctx.index.read().path_to_file.contains_key(&path) {
         return; // already a known placeholder / synced file
     }
-    if !path.is_file() || is_placeholder_stub(&path) {
+    if !path.is_file() || is_placeholder_stub(&path) || is_cloud_placeholder(&path) {
         return;
     }
     let (drive_id, folder_id) = {
@@ -450,11 +596,22 @@ async fn try_upload_settled(
         });
     };
 
-    match upload::upload_new_file(&ctx, &drive_id, &secrets, &folder_id, &path, &filename, on_progress)
-        .await
+    match upload::upload_new_file(
+        &ctx,
+        &drive_id,
+        &secrets,
+        &folder_id,
+        &path,
+        &filename,
+        on_progress,
+    )
+    .await
     {
         Ok(file_id) => {
-            ctx.index.write().path_to_file.insert(path.clone(), (drive_id, file_id));
+            ctx.index
+                .write()
+                .path_to_file
+                .insert(path.clone(), (drive_id, file_id));
             ctx.upload_update(&item_id, |it| {
                 it.state = "done".into();
                 it.progress = 1.0;

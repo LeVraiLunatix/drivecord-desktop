@@ -1,6 +1,6 @@
 [package]
 name = "drivecord-desktop"
-version = "0.2.0"
+version = "0.3.0"
 license = "AGPL-3.0-or-later"
 description = "Client de synchronisation Windows pour Drivecord"
 authors = ["LeVraiLunatix"]
@@ -47,3 +47,8 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
+
+# Copie corrigée de cloud-filter 0.0.6 (plus de panique dans les callbacks CfAPI) —
+# voir vendor/cloud-filter/VENDORED.md.
+[patch.crates-io]
+cloud-filter = { path = "vendor/cloud-filter" }

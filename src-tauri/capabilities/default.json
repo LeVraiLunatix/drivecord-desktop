@@ -36,6 +36,12 @@
     "allow-sync-set-drive-enabled",
     "allow-sync-open-folder",
     "allow-sync-open-file",
-    "allow-sync-uploads-status"
+    "allow-sync-uploads-status",
+    "allow-get-token",
+    "allow-save-token",
+    "allow-clear-token",
+    "allow-logout",
+    "allow-enter-auth",
+    "allow-sync-set-drive-keys"
   ]
 }

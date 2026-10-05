@@ -18,7 +18,9 @@ mod cf;
 mod config;
 mod crypto;
 mod discord;
+mod e2ee;
 mod folder_style;
+pub mod keystore;
 mod mirror;
 mod upload;
 mod watcher;
@@ -40,13 +42,16 @@ pub const DISPLAY_NAME: &str = "Drivecord";
 const STATUS_EVENT: &str = "sync://status";
 const RECONCILE_INTERVAL_SECS: u64 = 60;
 
-/// A drive's secrets, resolved once per reconcile pass from `GET /api/webhooks`.
+/// A drive's secrets, resolved once per reconcile pass from `GET /api/webhooks`
+/// (+ the locally stored drive keys for end-to-end encrypted drives).
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // `name` kept for parity/debugging; the sanitized dir name is what mirror.rs actually uses
 pub struct DriveSecrets {
     pub name: String,
     pub webhook_url: String,
-    pub enc_key: String,
+    /// Legacy drive (`e2eeVersion` 0): server-held raw key, base64.
+    pub legacy_key: Option<String>,
+    /// End-to-end encrypted drive: the drive key (from `keystore`).
+    pub dk: Option<e2ee::RawKey>,
 }
 
 /// In-memory index rebuilt on every reconcile — lets the Cloud Filter
@@ -70,6 +75,10 @@ pub struct DriveStatus {
     pub name: String,
     pub enabled: bool,
     pub file_count: u32,
+    /// End-to-end encrypted drive whose key the app doesn't have yet — the
+    /// user has to unlock their storage once in the app window.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -183,8 +192,7 @@ impl EngineCtx {
                 tokio::time::sleep(std::time::Duration::from_secs(4)).await;
                 let still_done = {
                     let q = uploads.read();
-                    q.is_empty()
-                        || q.iter().all(|i| i.state == "done")
+                    q.is_empty() || q.iter().all(|i| i.state == "done")
                 };
                 if still_done {
                     uploads.write().clear();
@@ -421,6 +429,24 @@ impl SyncEngine {
         s.state = "idle".into();
         drop(s);
         self.touch();
+    }
+
+    /// Drive keys from the unlocked shell (raw, base64). Stored for background
+    /// sync; triggers a pass when something new arrived.
+    pub fn set_drive_keys(&self, keys: HashMap<String, String>) -> Result<(), String> {
+        let keys = keys
+            .into_iter()
+            .filter_map(|(id, k)| e2ee::key_from_b64(&k).ok().map(|k| (id, k)))
+            .collect();
+        let dir = self
+            .config_path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        if keystore::merge(&dir, keys)? {
+            self.reconcile_now();
+        }
+        Ok(())
     }
 
     pub fn reconcile_now(&self) {

@@ -41,6 +41,11 @@ description = "Autorise la commande sync_set_drive_enabled."
 commands.allow = ["sync_set_drive_enabled"]
 
 [[permission]]
+identifier = "allow-sync-set-drive-keys"
+description = "Autorise la commande sync_set_drive_keys (fenêtres locales uniquement)."
+commands.allow = ["sync_set_drive_keys"]
+
+[[permission]]
 identifier = "allow-sync-open-folder"
 description = "Autorise la commande sync_open_folder."
 commands.allow = ["sync_open_folder"]
