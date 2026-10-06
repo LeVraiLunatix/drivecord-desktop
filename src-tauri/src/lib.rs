@@ -34,6 +34,13 @@ fn navigate<R: Runtime>(app: &tauri::AppHandle<R>, url: &str) {
 /// via `save_token`): switch the window to the embedded shell.
 #[tauri::command]
 fn enter_shell<R: Runtime>(app: tauri::AppHandle<R>) {
+    // `tauri dev` serves the shell from its own dev server (127.0.0.1:<port>),
+    // not from tauri.localhost — which only exists in a `tauri build`.
+    #[cfg(debug_assertions)]
+    if let Some(dev) = app.config().build.dev_url.clone() {
+        navigate(&app, dev.as_str());
+        return;
+    }
     navigate(&app, SHELL_URL);
 }
 
@@ -46,7 +53,7 @@ fn enter_auth<R: Runtime>(app: tauri::AppHandle<R>) {
 /// Clear the stored token and return to login.
 #[tauri::command]
 fn logout<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
-    token::clear_token()?;
+    token::clear_token(app.clone())?;
     navigate(&app, WELCOME_URL);
     Ok(())
 }
@@ -146,14 +153,31 @@ fn sync_now(state: tauri::State<'_, Arc<sync::SyncEngine>>) {
     state.reconcile_now();
 }
 
+/// Drive keys (raw, base64) from the unlocked shell — end-to-end encrypted
+/// drives can't be read by the sync engine without them.
 #[tauri::command(async)]
-fn sync_set_drive_enabled(state: tauri::State<'_, Arc<sync::SyncEngine>>, drive_id: String, enabled: bool) {
+fn sync_set_drive_keys(
+    state: tauri::State<'_, Arc<sync::SyncEngine>>,
+    keys: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    state.set_drive_keys(keys)
+}
+
+#[tauri::command(async)]
+fn sync_set_drive_enabled(
+    state: tauri::State<'_, Arc<sync::SyncEngine>>,
+    drive_id: String,
+    enabled: bool,
+) {
     state.set_drive_enabled(drive_id, enabled);
 }
 
 #[tauri::command(async)]
 fn sync_open_folder(state: tauri::State<'_, Arc<sync::SyncEngine>>) -> Result<(), String> {
-    let root = state.status().root.ok_or_else(|| "Aucun dossier choisi.".to_string())?;
+    let root = state
+        .status()
+        .root
+        .ok_or_else(|| "Aucun dossier choisi.".to_string())?;
     std::process::Command::new("explorer")
         .arg(&root)
         .spawn()
@@ -269,18 +293,19 @@ pub fn run() {
             win_start_drag,
             app_hide,
             app_quit,
-                        sync_status,
-                        sync_pick_folder,
-                        sync_set_root,
-                        sync_enable,
-                        sync_disable,
-                        sync_now,
-                        sync_set_drive_enabled,
-                        sync_open_folder,
-                        sync_open_file,
-                        sync_uploads_status,
-                        update_status,
-                        install_update,
+            sync_status,
+            sync_pick_folder,
+            sync_set_root,
+            sync_enable,
+            sync_disable,
+            sync_now,
+            sync_set_drive_enabled,
+            sync_set_drive_keys,
+            sync_open_folder,
+            sync_open_file,
+            sync_uploads_status,
+            update_status,
+            install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

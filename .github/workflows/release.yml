@@ -23,11 +23,18 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - run: npm ci
       - run: npm ci
         working-directory: discloud-src
+
+      # tauri.conf.json has no beforeBuildCommand: the shell must exist in
+      # ./frontend before `tauri build` runs.
+      - name: Build the embedded web shell
+        run: npm run shell
+        env:
+          DISCLOUD_DIR: discloud-src
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -37,7 +44,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DISCLOUD_DIR: discloud-src
           # Signs the NSIS updater bundle + generates latest.json (the
           # updater's endpoint manifest) — see tauri.conf.json plugins.updater.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -47,3 +53,15 @@ jobs:
           releaseName: "Drivecord Desktop ${{ github.ref_name }}"
           releaseDraft: false
           prerelease: false
+
+      # drivecord.app/download/windows redirects to
+      # releases/latest/download/Drivecord-Setup-x64.exe → fixed-name copy.
+      - name: Attach the fixed-name installer
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          exe=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe | head -1)
+          cp "$exe" Drivecord-Setup-x64.exe
+          gh release upload "${{ github.ref_name }}" Drivecord-Setup-x64.exe --clobber

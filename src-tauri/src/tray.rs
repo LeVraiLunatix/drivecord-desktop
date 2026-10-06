@@ -36,7 +36,13 @@ fn build_menu<R: Runtime>(
     update: &UpdateStatus,
 ) -> tauri::Result<Menu<R>> {
     let open = MenuItem::with_id(app, "open", "Ouvrir Drivecord", true, None::<&str>)?;
-    let folder = MenuItem::with_id(app, "folder", "Ouvrir le dossier dans Windows", true, None::<&str>)?;
+    let folder = MenuItem::with_id(
+        app,
+        "folder",
+        "Ouvrir le dossier dans Windows",
+        true,
+        None::<&str>,
+    )?;
     let pause = MenuItem::with_id(
         app,
         "pause",
@@ -67,10 +73,17 @@ fn build_menu<R: Runtime>(
     menu.append(&PredefinedMenuItem::separator(app)?)?;
 
     if status.drives.is_empty() {
-        let none = MenuItem::with_id(app, "drives_none", "Aucun drive synchronisé", false, None::<&str>)?;
+        let none = MenuItem::with_id(
+            app,
+            "drives_none",
+            "Aucun drive synchronisé",
+            false,
+            None::<&str>,
+        )?;
         menu.append(&none)?;
     } else {
-        let header = MenuItem::with_id(app, "drives_header", "Ouvrir un drive", false, None::<&str>)?;
+        let header =
+            MenuItem::with_id(app, "drives_header", "Ouvrir un drive", false, None::<&str>)?;
         menu.append(&header)?;
         for d in &status.drives {
             let it = MenuItem::with_id(
@@ -162,7 +175,9 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         let tray_l: TrayIcon<R> = tray.clone();
         let last = last.clone();
         app.listen("sync://status", move |event| {
-            let Ok(s) = serde_json::from_str::<SyncStatus>(event.payload()) else { return };
+            let Ok(s) = serde_json::from_str::<SyncStatus>(event.payload()) else {
+                return;
+            };
             let update = {
                 let mut l = last.lock();
                 l.0 = s;
@@ -178,7 +193,9 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         let tray_l: TrayIcon<R> = tray.clone();
         let last = last.clone();
         app.listen("update://status", move |event| {
-            let Ok(u) = serde_json::from_str::<UpdateStatus>(event.payload()) else { return };
+            let Ok(u) = serde_json::from_str::<UpdateStatus>(event.payload()) else {
+                return;
+            };
             let sync = {
                 let mut l = last.lock();
                 l.1 = u;

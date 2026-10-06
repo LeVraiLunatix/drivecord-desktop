@@ -11,10 +11,7 @@ fn entry() -> Result<keyring::Entry, String> {
 }
 
 pub fn read() -> Option<String> {
-    match entry().ok()?.get_password() {
-        Ok(t) => Some(t),
-        Err(_) => None,
-    }
+    entry().ok()?.get_password().ok()
 }
 
 #[tauri::command]
@@ -30,8 +27,12 @@ pub fn get_token() -> Option<String> {
     read()
 }
 
+/// Sign-out: forget the session token AND the drive keys the sync engine kept.
 #[tauri::command]
-pub fn clear_token() -> Result<(), String> {
+pub fn clear_token<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+    use tauri::Manager;
+    let dir = app.path().app_config_dir().ok();
+    crate::sync::keystore::clear(dir.as_deref());
     match entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e.to_string()),

@@ -51,7 +51,9 @@ pub fn plan_chunks(total: u64) -> Vec<(u32, u64, u64)> {
 
 /// Unix-ms expiry from a Discord CDN URL's hex `ex` query param (0 if absent).
 pub fn parse_cdn_expiry(url: &str) -> i64 {
-    let Some(q) = url.split('?').nth(1) else { return 0 };
+    let Some(q) = url.split('?').nth(1) else {
+        return 0;
+    };
     for pair in q.split('&') {
         if let Some(hex) = pair.strip_prefix("ex=") {
             if let Ok(secs) = i64::from_str_radix(hex, 16) {
@@ -191,13 +193,9 @@ pub async fn download_chunk(
         async move {
             let res = http.get(&url).send().await.map_err(|e| e.to_string())?;
             if res.status() == 403 || res.status() == 404 {
-                let (fresh, _) = refresh_chunk_url(
-                    http,
-                    webhook_url,
-                    &chunk.message_id,
-                    &chunk.attachment_id,
-                )
-                .await?;
+                let (fresh, _) =
+                    refresh_chunk_url(http, webhook_url, &chunk.message_id, &chunk.attachment_id)
+                        .await?;
                 let res2 = http.get(&fresh).send().await.map_err(|e| e.to_string())?;
                 if !res2.status().is_success() {
                     return Err(format!("HTTP {}", res2.status()));
@@ -283,7 +281,10 @@ mod tests {
 
     #[test]
     fn cdn_expiry() {
-        assert_eq!(parse_cdn_expiry("https://cdn.discordapp.com/x?ex=66b1a0e0&is=1&hm=2"), 0x66b1a0e0 * 1000);
+        assert_eq!(
+            parse_cdn_expiry("https://cdn.discordapp.com/x?ex=66b1a0e0&is=1&hm=2"),
+            0x66b1a0e0 * 1000
+        );
         assert_eq!(parse_cdn_expiry("https://cdn.discordapp.com/x"), 0);
     }
 }

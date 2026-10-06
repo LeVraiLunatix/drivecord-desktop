@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::sync::discord::ChunkRef;
+use crate::sync::e2ee::{FileMeta, RawKey};
 
 const BASE: &str = "https://drivecord.app";
 
@@ -20,8 +21,13 @@ pub struct Webhook {
     #[serde(rename = "webhookUrl")]
     pub webhook_url: String,
     pub name: String,
+    /// Legacy drives only (`e2eeVersion` 0): the server-held raw key.
     #[serde(rename = "encKey")]
     pub enc_key: Option<String>,
+    /// ≥ 1: end-to-end encrypted — the drive key is only known client-side
+    /// (handed over by the unlocked shell, see `keystore.rs`).
+    #[serde(default, rename = "e2eeVersion")]
+    pub e2ee_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,6 +36,9 @@ pub struct FolderEntry {
     #[serde(rename = "parentId")]
     pub parent_id: String,
     pub name: String,
+    /// E2EE drives: the real name, sealed with the drive key (`name` is "").
+    #[serde(default, rename = "encName")]
+    pub enc_name: Option<String>,
 }
 
 // `mime_type` / `chunk_size` are part of the wire format but unused by the
@@ -52,6 +61,47 @@ pub struct FileEntry {
     pub enc_iv: Option<String>,
     #[serde(rename = "updatedAt")]
     pub updated_at: i64,
+    /// Format v1 (end-to-end): per-file key wrapped by the drive key, sealed
+    /// metadata (name/type/plain size), per-file nonce prefix.
+    #[serde(default, rename = "cryptoVersion")]
+    pub crypto_version: Option<u32>,
+    #[serde(default, rename = "fkWrapped")]
+    pub fk_wrapped: Option<String>,
+    #[serde(default, rename = "encMeta")]
+    pub enc_meta: Option<String>,
+    #[serde(default, rename = "noncePrefix")]
+    pub nonce_prefix: Option<String>,
+    /// Resolved by the mirror pass for v1 files (never on the wire).
+    #[serde(skip)]
+    pub fk: Option<RawKey>,
+    #[serde(skip)]
+    pub meta: Option<FileMeta>,
+}
+
+impl FileEntry {
+    pub fn is_v1(&self) -> bool {
+        self.crypto_version.unwrap_or(0) >= 1
+    }
+
+    /// Name to show on disk (decrypted for v1 files).
+    pub fn display_name(&self) -> &str {
+        self.meta
+            .as_ref()
+            .map_or(self.filename.as_str(), |m| m.name.as_str())
+    }
+
+    /// Size of the decrypted content — what the placeholder must declare.
+    pub fn logical_size(&self) -> u64 {
+        if let Some(m) = &self.meta {
+            return m.size;
+        }
+        // Legacy single-IV files: ciphertext = plaintext + one 16-byte tag.
+        if self.enc_iv.is_some() {
+            self.size.saturating_sub(16)
+        } else {
+            self.size
+        }
+    }
 }
 
 // `trashed*Ids` only populate in incremental (`?since=`) mode — Phase C.
@@ -80,6 +130,21 @@ struct CreateFileBody<'a> {
     chunks: &'a [ChunkRef],
     #[serde(rename = "encIv", skip_serializing_if = "Option::is_none")]
     enc_iv: Option<&'a str>,
+    #[serde(rename = "cryptoVersion")]
+    crypto_version: u32,
+    #[serde(rename = "fkWrapped", skip_serializing_if = "Option::is_none")]
+    fk_wrapped: Option<&'a str>,
+    #[serde(rename = "encMeta", skip_serializing_if = "Option::is_none")]
+    enc_meta: Option<&'a str>,
+    #[serde(rename = "noncePrefix", skip_serializing_if = "Option::is_none")]
+    nonce_prefix: Option<&'a str>,
+}
+
+/// The v1 (end-to-end) part of a new file record.
+pub struct V1Fields<'a> {
+    pub fk_wrapped: &'a str,
+    pub enc_meta: &'a str,
+    pub nonce_prefix: &'a str,
 }
 
 #[derive(Serialize, Default)]
@@ -90,16 +155,19 @@ pub struct PatchFileBody {
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trashed: Option<bool>,
+    /// Rename of a v1 file: re-sealed metadata (`filename` is refused).
+    #[serde(rename = "encMeta", skip_serializing_if = "Option::is_none")]
+    pub enc_meta: Option<String>,
 }
 
-// Folder creation propagation (new local subfolder -> cloud) is Phase C.
-#[allow(dead_code)]
 #[derive(Serialize)]
 struct CreateFolderBody<'a> {
     id: &'a str,
     #[serde(rename = "parentId")]
     parent_id: &'a str,
     name: &'a str,
+    #[serde(rename = "encName", skip_serializing_if = "Option::is_none")]
+    enc_name: Option<&'a str>,
 }
 
 pub struct Api {
@@ -161,6 +229,7 @@ impl Api {
         chunk_size: u64,
         chunks: &[ChunkRef],
         enc_iv: Option<&str>,
+        v1: Option<V1Fields<'_>>,
     ) -> Result<FileEntry> {
         let body = CreateFileBody {
             id,
@@ -171,10 +240,29 @@ impl Api {
             chunk_size,
             chunks,
             enc_iv,
+            crypto_version: u32::from(v1.is_some()),
+            fk_wrapped: v1.as_ref().map(|v| v.fk_wrapped),
+            enc_meta: v1.as_ref().map(|v| v.enc_meta),
+            nonce_prefix: v1.as_ref().map(|v| v.nonce_prefix),
         };
         let res = self
-            .req(reqwest::Method::POST, &format!("/api/drive/{drive_id}/files"))
+            .req(
+                reqwest::Method::POST,
+                &format!("/api/drive/{drive_id}/files"),
+            )
             .json(&body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        Self::json(res).await
+    }
+
+    pub async fn get_file(&self, drive_id: &str, id: &str) -> Result<FileEntry> {
+        let res = self
+            .req(
+                reqwest::Method::GET,
+                &format!("/api/drive/{drive_id}/files/{id}"),
+            )
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -197,11 +285,25 @@ impl Api {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub async fn create_folder(&self, drive_id: &str, id: &str, parent_id: &str, name: &str) -> Result<()> {
-        let body = CreateFolderBody { id, parent_id, name };
+    pub async fn create_folder(
+        &self,
+        drive_id: &str,
+        id: &str,
+        parent_id: &str,
+        name: &str,
+        enc_name: Option<&str>,
+    ) -> Result<()> {
+        let body = CreateFolderBody {
+            id,
+            parent_id,
+            name,
+            enc_name,
+        };
         let res = self
-            .req(reqwest::Method::POST, &format!("/api/drive/{drive_id}/folders"))
+            .req(
+                reqwest::Method::POST,
+                &format!("/api/drive/{drive_id}/folders"),
+            )
             .json(&body)
             .send()
             .await

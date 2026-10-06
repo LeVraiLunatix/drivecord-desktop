@@ -2,7 +2,7 @@
 
 # App-command permissions referenced by `capabilities/remote.json` so the
 # first-party login page on drivecord.app can complete the token handoff.
-# Local windows don't need these — app commands are allowed locally by default.
+# The local windows reference them too (capabilities/default.json).
 
 [[permission]]
 identifier = "allow-save-token"
@@ -53,3 +53,16 @@ commands.allow = ["app_hide"]
 identifier = "allow-app-quit"
 description = "Autorise la commande app_quit."
 commands.allow = ["app_quit"]
+
+# Used by the embedded shell (local window): sign-out / expired session, and
+# the daily bearer refresh. An app command with no permission is refused
+# even from a local window ("clear_token not allowed").
+[[permission]]
+identifier = "allow-clear-token"
+description = "Autorise la commande clear_token."
+commands.allow = ["clear_token"]
+
+[[permission]]
+identifier = "allow-logout"
+description = "Autorise la commande logout."
+commands.allow = ["logout"]

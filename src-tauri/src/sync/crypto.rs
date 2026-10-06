@@ -57,7 +57,10 @@ mod tests {
     const CT: &str = "o0Uuio1nVd8b8cGGlKM8zcKQ3VE3PXM3nSKEOqp+ZljKKIMO+dbgyG2MTL06bKRGln3Lujlk5qKgWg75xX+iwX47VGI42hsa+RY=";
 
     fn unhex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     #[test]

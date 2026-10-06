@@ -17,6 +17,12 @@ jobs:
         with:
           workspaces: "src-tauri -> target"
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      # `tauri::generate_context!()` needs `frontendDist` (../frontend) to exist;
+      # the real shell is only built for releases (release.yml) — a stub is enough
+      # to type-check and test the Rust side.
+      - name: Stub frontend
+        shell: bash
+        run: mkdir -p frontend && echo "<!doctype html>" > frontend/index.html
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
 
